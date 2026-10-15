@@ -17,8 +17,8 @@ import (
 	"github.com/moseleydev/tracelet/core"
 )
 
-const schemaVersion = 1
-
+// schema creates version 1; migrations take it from there. Each entry in
+// migrations moves the file from version i+1 to i+2.
 const schema = `
 CREATE TABLE IF NOT EXISTS fingerprints (
 	hash       TEXT PRIMARY KEY,
@@ -44,6 +44,43 @@ CREATE TABLE IF NOT EXISTS rollups (
 
 CREATE INDEX IF NOT EXISTS rollups_by_bucket ON rollups (bucket);
 `
+
+var migrations = []string{
+	// v2: query templates, EXPLAIN plans, detector findings, N+1 patterns.
+	`
+	ALTER TABLE fingerprints ADD COLUMN template TEXT NOT NULL DEFAULT '';
+
+	CREATE TABLE plans (
+		hash        TEXT PRIMARY KEY,
+		explained_at INTEGER NOT NULL, -- unix nanoseconds
+		plan        TEXT NOT NULL,     -- JSON plan tree, empty on error
+		error       TEXT NOT NULL
+	);
+
+	CREATE TABLE findings (
+		hash        TEXT    NOT NULL,
+		detector    TEXT    NOT NULL,
+		severity    INTEGER NOT NULL,
+		title       TEXT    NOT NULL,
+		explanation TEXT    NOT NULL,
+		suggestion  TEXT    NOT NULL,
+		fix         TEXT    NOT NULL,
+		updated_at  INTEGER NOT NULL,
+		PRIMARY KEY (hash, detector)
+	);
+
+	CREATE TABLE patterns (
+		hash        TEXT PRIMARY KEY,
+		parent_hash TEXT    NOT NULL,
+		runs        INTEGER NOT NULL,
+		calls       INTEGER NOT NULL,
+		max_run     INTEGER NOT NULL,
+		last_seen   INTEGER NOT NULL
+	);
+	`,
+}
+
+var schemaVersion = 1 + len(migrations)
 
 // Store is a Tracelet data file.
 type Store struct {
@@ -73,15 +110,35 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("open %s: data file is from a newer Tracelet (schema %d)", path, version)
 	}
-	if _, err := db.Exec(schema); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("create schema: %w", err)
+	if version == 0 {
+		if _, err := db.Exec(schema); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("create schema: %w", err)
+		}
+		version = 1
 	}
-	if _, err := db.Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
-		db.Close()
-		return nil, err
+	for ; version < schemaVersion; version++ {
+		if err := migrate(db, migrations[version-1], version+1); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("upgrade %s to schema %d: %w", path, version+1, err)
+		}
 	}
 	return &Store{db: db}, nil
+}
+
+func migrate(db *sql.DB, stmts string, to int) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(stmts); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", to)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // Close closes the data file.
@@ -100,8 +157,10 @@ func (s *Store) Save(fps []core.Fingerprint, rollups []core.Rollup) error {
 	for _, fp := range fps {
 		tables, _ := json.Marshal(nonNil(fp.Tables))
 		if _, err := tx.Exec(
-			`INSERT OR IGNORE INTO fingerprints (hash, query, tables, first_seen) VALUES (?, ?, ?, ?)`,
-			fp.Hash, fp.Query, string(tables), now,
+			`INSERT INTO fingerprints (hash, query, tables, first_seen, template) VALUES (?, ?, ?, ?, ?)
+			 ON CONFLICT (hash) DO UPDATE SET template = excluded.template
+			 WHERE fingerprints.template = '' AND excluded.template != ''`,
+			fp.Hash, fp.Query, string(tables), now, fp.Template,
 		); err != nil {
 			return err
 		}
@@ -207,8 +266,11 @@ func (s *Store) Tables(since time.Time) ([]TableStats, error) {
 	return out, nil
 }
 
+// Fingerprints returns every known fingerprint by hash.
+func (s *Store) Fingerprints() (map[string]core.Fingerprint, error) { return s.fingerprints() }
+
 func (s *Store) fingerprints() (map[string]core.Fingerprint, error) {
-	rows, err := s.db.Query(`SELECT hash, query, tables FROM fingerprints`)
+	rows, err := s.db.Query(`SELECT hash, query, tables, template FROM fingerprints`)
 	if err != nil {
 		return nil, err
 	}
@@ -217,7 +279,7 @@ func (s *Store) fingerprints() (map[string]core.Fingerprint, error) {
 	for rows.Next() {
 		var fp core.Fingerprint
 		var tables string
-		if err := rows.Scan(&fp.Hash, &fp.Query, &tables); err != nil {
+		if err := rows.Scan(&fp.Hash, &fp.Query, &tables, &fp.Template); err != nil {
 			return nil, err
 		}
 		json.Unmarshal([]byte(tables), &fp.Tables)

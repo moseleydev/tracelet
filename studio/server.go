@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/moseleydev/tracelet/analyzer"
 	"github.com/moseleydev/tracelet/core/store"
 )
 
@@ -25,6 +26,7 @@ type Info struct {
 	Proxy         string    `json:"proxy,omitempty"`
 	Data          string    `json:"data"`
 	CaptureParams bool      `json:"capture_params"`
+	Analyze       bool      `json:"analyze"`
 	StartedAt     time.Time `json:"started_at"`
 }
 
@@ -44,6 +46,8 @@ func New(st *store.Store, hub *Hub, info Info) *Server {
 	s.mux.HandleFunc("GET /api/tables", s.handleTables)
 	s.mux.HandleFunc("GET /api/series", s.handleSeries)
 	s.mux.HandleFunc("GET /api/live", s.handleLive)
+	s.mux.HandleFunc("GET /api/findings", s.handleFindings)
+	s.mux.HandleFunc("GET /api/plan", s.handlePlan)
 	s.mux.Handle("/", uiHandler())
 	return s
 }
@@ -168,6 +172,35 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+func (s *Server) handleFindings(w http.ResponseWriter, r *http.Request) {
+	since, err := parseSince(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	sums, err := analyzer.Summaries(s.store, since)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, nonNil(sums))
+}
+
+func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
+	hash := r.URL.Query().Get("hash")
+	plans, err := s.store.Plans()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	rec, ok := plans[hash]
+	if !ok {
+		http.Error(w, "no plan for this query yet", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, rec)
 }
 
 // parseSince reads ?since=15m (a duration back from now) or ?since=0 for

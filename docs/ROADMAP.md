@@ -49,12 +49,16 @@ The UI is embedded in the Go binary and has no chart or animation dependencies: 
 - [ ] Release binaries for macOS, Linux and Windows
 - [ ] Label 10–15 `good first issue`s (new detectors are ideal)
 
-## Phase 4: Analyzer and recommendations
+## Phase 4: Analyzer and recommendations (in progress)
 
-- [ ] Automatic, read-only `EXPLAIN` for slow or frequent queries
-- [ ] Plan visualizer with the costliest node highlighted
-- [ ] Detectors: full scan, missing index, N+1, leading-wildcard `LIKE`, unbounded query, `SELECT *`, duplicate reads
-- [ ] What-if index simulation with `hypopg`
+- [x] Automatic `EXPLAIN` of the costliest queries: generic plans, read-only transaction, never executed
+- [x] Query templates: literals become `$n` parameters, so plans need no stored values
+- [x] Plan tree in the query detail, with full table scans flagged
+- [x] Detectors: missing index (with ORDER BY columns), full scan (leading-wildcard `LIKE`, functions on columns, unfiltered reads), N+1 (back-to-back repeats per connection)
+- [x] Insights tab, issue badges in the topology and query list, suggestions in `tracelet top`
+- [x] Findings clear themselves once fixed (plans refresh every 2 minutes)
+- [ ] More detectors (good first issues): unbounded query, `SELECT *`, duplicate reads, `OFFSET` pagination, unused indexes
+- [ ] What-if index simulation with `hypopg`: show the estimated speedup before creating an index
 
 ## Phase 5: Request context
 

@@ -12,6 +12,7 @@ import (
 
 	"github.com/moseleydev/tracelet/core"
 	"github.com/moseleydev/tracelet/core/store"
+	"github.com/moseleydev/tracelet/detectors"
 )
 
 func testStore(t *testing.T) *store.Store {
@@ -207,5 +208,39 @@ func TestHubSamplesHeavyTraffic(t *testing.T) {
 	json.Unmarshal(<-ch, &batch)
 	if len(batch.Events) != maxBatchEvents || batch.Total != maxBatchEvents*3 {
 		t.Fatalf("events = %d, total = %d", len(batch.Events), batch.Total)
+	}
+}
+
+func TestFindingsAndPlanAPI(t *testing.T) {
+	st := testStore(t)
+	st.SavePlan(store.PlanRecord{Hash: "abc", ExplainedAt: time.Now(), Plan: &detectors.Plan{Node: "Seq Scan", Relation: "users"}})
+	st.ReplaceFindings("abc", []detectors.Finding{{Detector: "missing-index", Severity: detectors.Critical, Title: "Missing index on users (email)", Fix: "CREATE INDEX ..."}})
+	srv := httptest.NewServer(New(st, nil, Info{}))
+	defer srv.Close()
+
+	var findings []struct {
+		Hash     string     `json:"hash"`
+		Severity string     `json:"severity"`
+		Title    string     `json:"title"`
+		Share    float64    `json:"share_of_time"`
+		Stats    core.Stats `json:"stats"`
+	}
+	getJSON(t, srv, "/api/findings?since=15m", &findings)
+	if len(findings) != 1 || findings[0].Severity != "critical" || findings[0].Stats.Count != 2 || findings[0].Share != 1 {
+		t.Fatalf("findings = %+v", findings)
+	}
+
+	var rec store.PlanRecord
+	getJSON(t, srv, "/api/plan?hash=abc", &rec)
+	if rec.Plan == nil || rec.Plan.Relation != "users" {
+		t.Fatalf("plan = %+v", rec)
+	}
+	resp, err := http.Get(srv.URL + "/api/plan?hash=unknown")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown plan: %s, want 404", resp.Status)
 	}
 }

@@ -1,17 +1,19 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { fmtCount, fmtMs, nsToMs, windows } from './api'
-import type { WindowId } from './api'
-import { useInfo, useLive, useStats } from './hooks'
+import type { Finding, WindowId } from './api'
+import { useFindings, useInfo, useLive, useStats } from './hooks'
+import { Insights } from './Insights'
 import { QueryDetail } from './QueryDetail'
 import { QueryTable, SpeedChip } from './QueryTable'
 import { Topology } from './Topology'
 
-type View = 'topology' | 'queries'
+type View = 'topology' | 'queries' | 'insights'
 
 function readHash(): { view: View; query: string | null } {
   const p = new URLSearchParams(window.location.hash.slice(1))
-  return { view: p.get('view') === 'queries' ? 'queries' : 'topology', query: p.get('q') }
+  const v = p.get('view')
+  return { view: v === 'queries' || v === 'insights' ? v : 'topology', query: p.get('q') }
 }
 
 export default function App() {
@@ -29,6 +31,15 @@ export default function App() {
   const info = useInfo()
   const live = useLive()
   const { top, tables, error } = useStats(win)
+  const findings = useFindings(win)
+
+  // Findings per query, most severe first (the API already orders them).
+  const issues = useMemo(() => {
+    const m = new Map<string, Finding[]>()
+    for (const f of findings.data ?? []) m.set(f.hash, [...(m.get(f.hash) ?? []), f])
+    return m
+  }, [findings.data])
+  const criticalCount = (findings.data ?? []).filter((f) => f.severity === 'critical').length
 
   useEffect(() => {
     const p = new URLSearchParams({ view })
@@ -108,6 +119,11 @@ export default function App() {
         <Kpi label="Queries" value={fmtCount(totals.calls)} sub={winLabel} />
         <Kpi label="Query shapes" value={top ? String(top.length) : '–'} sub="distinct fingerprints" />
         <Kpi
+          label="Suggestions"
+          value={findings.data ? (criticalCount ? <span className="err">{findings.data.length}</span> : String(findings.data.length)) : '–'}
+          sub={findings.data?.length ? `${criticalCount} critical` : 'from EXPLAIN'}
+        />
+        <Kpi
           label="Errors"
           value={totals.errors ? <span className="err">{fmtCount(totals.errors)}</span> : '0'}
           sub={winLabel}
@@ -123,14 +139,23 @@ export default function App() {
             <button role="tab" className="tab" aria-selected={view === 'queries'} onClick={() => setView('queries')}>
               Queries
             </button>
+            <button role="tab" className="tab" aria-selected={view === 'insights'} onClick={() => setView('insights')}>
+              Insights
+              {!!findings.data?.length && (
+                <span className={`count-badge ${criticalCount ? 'critical' : ''}`}>{findings.data.length}</span>
+              )}
+            </button>
             <span className="hint">Ranked by total time: calls × latency</span>
           </nav>
           {error && <div className="banner">Can’t reach Tracelet: {error}</div>}
           {!isLive && (
             <div className="banner">Viewing saved data. Run “tracelet up” to watch queries live.</div>
           )}
-          {view === 'topology' ? (
+          {view === 'insights' ? (
+            <Insights findings={findings.data} analyze={info.data?.analyze ?? true} live={isLive} onSelect={setSelected} />
+          ) : view === 'topology' ? (
             <Topology
+              issues={issues}
               stats={top ?? []}
               tables={tables ?? []}
               subscribe={live.subscribe}
@@ -140,10 +165,17 @@ export default function App() {
               loaded={top !== null}
             />
           ) : (
-            <QueryTable stats={top ?? []} selected={selected} onSelect={setSelected} />
+            <QueryTable stats={top ?? []} selected={selected} onSelect={setSelected} issues={issues} />
           )}
         </div>
-        {selectedStats && <QueryDetail stats={selectedStats} win={win} onClose={() => setSelected(null)} />}
+        {selectedStats && (
+          <QueryDetail
+            stats={selectedStats}
+            win={win}
+            findings={issues.get(selectedStats.fingerprint.hash) ?? []}
+            onClose={() => setSelected(null)}
+          />
+        )}
       </div>
     </div>
   )

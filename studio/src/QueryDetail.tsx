@@ -1,7 +1,9 @@
 import { useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { api, fmtCount, fmtMs, nsToMs, usToMs } from './api'
-import type { SeriesPoint, Stats, WindowId } from './api'
+import type { Finding, SeriesPoint, Stats, WindowId } from './api'
+import { FindingBody, SeverityChip } from './Insights'
+import { PlanTree } from './PlanTree'
 import { BarChart, LineChart } from './charts'
 import { usePoll } from './hooks'
 import { SpeedChip, TableTags } from './QueryTable'
@@ -53,9 +55,18 @@ function bucketize(points: SeriesPoint[]): Bucketed {
   return out
 }
 
-export function QueryDetail({ stats, win, onClose }: { stats: Stats; win: WindowId; onClose: () => void }) {
+interface Props {
+  stats: Stats
+  win: WindowId
+  findings: Finding[]
+  onClose: () => void
+}
+
+export function QueryDetail({ stats, win, findings, onClose }: Props) {
   const hash = stats.fingerprint.hash
   const series = usePoll<SeriesPoint[]>(() => api.series(hash, win), [hash, win], 3000)
+  // Wrapped so "not explained yet" (null) differs from "still loading".
+  const plan = usePoll(() => api.plan(hash).then((rec) => ({ rec })), [hash], 10_000)
   const b = useMemo(() => bucketize(series.data ?? []), [series.data])
   const [copied, setCopied] = useState(false)
 
@@ -87,6 +98,16 @@ export function QueryDetail({ stats, win, onClose }: { stats: Stats; win: Window
 
       <pre className="sql mono">{stats.fingerprint.query}</pre>
       <TableTags tables={stats.fingerprint.tables} />
+
+      {findings.map((f) => (
+        <div className={`card compact ${f.severity}`} key={f.detector}>
+          <header>
+            <SeverityChip severity={f.severity} />
+            <h3>{f.title}</h3>
+          </header>
+          <FindingBody f={f} compact />
+        </div>
+      ))}
 
       <div className="tiles">
         <Tile label="Total time" value={fmtMs(nsToMs(stats.total))} />
@@ -132,6 +153,12 @@ export function QueryDetail({ stats, win, onClose }: { stats: Stats; win: Window
             ariaLabel={`Number of calls per ${per}`}
           />
         )}
+      </div>
+
+      <div className="section">
+        <h3>Query plan</h3>
+        <p className="caption">How PostgreSQL runs this query, from EXPLAIN (planned with generic parameters, never executed).</p>
+        <PlanTree record={plan.data ? plan.data.rec : undefined} />
       </div>
 
       {stats.last_error && (

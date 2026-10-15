@@ -12,6 +12,10 @@ type Fingerprint struct {
 	Hash   string   `json:"hash"`
 	Query  string   `json:"query"`
 	Tables []string `json:"tables"`
+	// Template is the query with literals replaced by $n parameters, ready
+	// to prepare and EXPLAIN. It never contains values. Empty when the query
+	// cannot be prepared (e.g. several statements).
+	Template string `json:"-"`
 }
 
 // Rollup aggregates every event of one fingerprint that completed within one
@@ -88,3 +92,15 @@ func Summarize(fp Fingerprint, rollups []Rollup, bucketSize time.Duration) Stats
 // storage small while still giving the studio smooth latency-over-time
 // charts.
 const BucketSize = 10 * time.Second
+
+// Bursts records one fingerprint running many times in a row on the same
+// connection: the signature of an N+1 loop, where the app runs one query per
+// row returned by a previous ("parent") query.
+type Bursts struct {
+	Hash       string    `json:"hash"`
+	ParentHash string    `json:"parent_hash"` // the query that ran just before the latest burst
+	Runs       int64     `json:"runs"`        // number of bursts seen
+	Calls      int64     `json:"calls"`       // calls made inside bursts
+	MaxRun     int64     `json:"max_run"`     // longest burst
+	LastSeen   time.Time `json:"last_seen"`
+}

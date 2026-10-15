@@ -11,9 +11,11 @@ import (
 	"github.com/moseleydev/tracelet/core/fingerprint"
 )
 
-// Saver persists fingerprints and rollups. *store.Store implements it.
+// Saver persists fingerprints, rollups and burst patterns. *store.Store
+// implements it.
 type Saver interface {
 	Save(fps []core.Fingerprint, rollups []core.Rollup) error
+	AddBursts(deltas []core.Bursts) error
 }
 
 // Aggregator groups events by fingerprint and time bucket. It is not safe for
@@ -30,6 +32,18 @@ type Aggregator struct {
 
 	open  map[key]*core.Rollup
 	dirty map[key]bool
+
+	conns  map[uint64]*connState   // per-connection run tracking
+	bursts map[string]*core.Bursts // bursts seen since the last flush
+}
+
+// connState follows the sequence of queries on one connection to spot the
+// same query repeating back to back (an N+1 loop).
+type connState struct {
+	hash    string // fingerprint of the current run
+	parent  string // fingerprint that ran just before the run started
+	run     int64
+	lastEnd time.Time
 }
 
 type key struct {
@@ -46,6 +60,16 @@ const (
 	// grace is how long a bucket stays open after it ends, for events still
 	// in flight. Events are bucketed by completion time, so this can be short.
 	grace = 5 * time.Second
+
+	// A burst is at least minBurst calls of one query in a row on one
+	// connection, each starting within burstGap of the previous one ending.
+	// The gap is tight on purpose: inside an N+1 loop the app only spends
+	// microseconds between rows, while separate requests that happen to
+	// reuse a pooled connection are usually much further apart.
+	minBurst = 5
+	burstGap = 10 * time.Millisecond
+
+	connIdle = time.Minute // forget connections idle this long
 )
 
 // New returns an Aggregator that saves to saver. When captureParams is false,
@@ -63,6 +87,8 @@ func New(saver Saver, captureParams bool, logf func(string, ...any)) *Aggregator
 		known:         map[string]bool{},
 		open:          map[key]*core.Rollup{},
 		dirty:         map[key]bool{},
+		conns:         map[uint64]*connState{},
+		bursts:        map[string]*core.Bursts{},
 	}
 }
 
@@ -112,12 +138,74 @@ func (a *Aggregator) Add(e core.Event) core.Fingerprint {
 			r.SlowQuery, r.SlowParams = e.Query, e.Params
 		}
 	}
+	a.trackRun(e, fp.Hash)
 	return fp
+}
+
+func (a *Aggregator) trackRun(e core.Event, hash string) {
+	if e.ConnID == 0 {
+		return
+	}
+	st := a.conns[e.ConnID]
+	if st == nil {
+		st = &connState{}
+		a.conns[e.ConnID] = st
+	}
+	contiguous := !st.lastEnd.IsZero() && e.StartedAt.Sub(st.lastEnd) <= burstGap
+	if contiguous && hash == st.hash {
+		st.run++
+	} else {
+		a.endRun(st)
+		st.parent = ""
+		if contiguous {
+			st.parent = st.hash
+		}
+		st.hash, st.run = hash, 1
+	}
+	st.lastEnd = e.StartedAt.Add(e.Duration)
+}
+
+// endRun records the connection's current run if it was a burst.
+func (a *Aggregator) endRun(st *connState) {
+	if st.run >= minBurst && st.parent != "" && st.parent != st.hash {
+		b := a.bursts[st.hash]
+		if b == nil {
+			b = &core.Bursts{Hash: st.hash}
+			a.bursts[st.hash] = b
+		}
+		b.ParentHash = st.parent
+		b.Runs++
+		b.Calls += st.run
+		b.MaxRun = max(b.MaxRun, st.run)
+		b.LastSeen = st.lastEnd
+	}
+	st.run = 0
 }
 
 // Flush saves every bucket that changed since the last flush and closes
 // buckets that have ended. With final set, all buckets are closed.
 func (a *Aggregator) Flush(final bool) error {
+	// Close runs on connections that have gone quiet.
+	now := a.now()
+	for id, st := range a.conns {
+		if final || now.Sub(st.lastEnd) > burstGap {
+			a.endRun(st)
+		}
+		if final || now.Sub(st.lastEnd) > connIdle {
+			delete(a.conns, id)
+		}
+	}
+	if len(a.bursts) > 0 {
+		deltas := make([]core.Bursts, 0, len(a.bursts))
+		for _, b := range a.bursts {
+			deltas = append(deltas, *b)
+		}
+		if err := a.saver.AddBursts(deltas); err != nil {
+			return err // keep the deltas and retry next flush
+		}
+		clear(a.bursts)
+	}
+
 	if len(a.dirty) == 0 && len(a.newFps) == 0 {
 		a.evict(final)
 		return nil

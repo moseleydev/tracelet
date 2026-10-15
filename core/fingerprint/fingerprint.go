@@ -23,7 +23,8 @@ import (
 
 // Of returns the fingerprint of a PostgreSQL query.
 func Of(query string) core.Fingerprint {
-	toks := collapse(tokenize(query))
+	raw := tokenize(query)
+	toks := collapse(raw)
 	for len(toks) > 0 && toks[len(toks)-1].text == ";" {
 		toks = toks[:len(toks)-1] // "SELECT 1;" and "SELECT 1" are the same query
 	}
@@ -59,9 +60,10 @@ func Of(query string) core.Fingerprint {
 	h := fnv.New64a()
 	h.Write([]byte(key.String()))
 	return core.Fingerprint{
-		Hash:   strconv.FormatUint(h.Sum64(), 16),
-		Query:  display,
-		Tables: tables(toks),
+		Hash:     strconv.FormatUint(h.Sum64(), 16),
+		Query:    display,
+		Tables:   tables(toks),
+		Template: template(raw),
 	}
 }
 
@@ -77,8 +79,13 @@ const (
 )
 
 type token struct {
-	kind kind
-	text string
+	kind  kind
+	text  string
+	param string // the original "$1" for bind parameters; empty for literals
+	// For string literals: whether they start or end with a LIKE wildcard,
+	// so templates can keep the pattern's shape without its value.
+	leadPct, trailPct bool
+	onlyPct           bool // the literal is nothing but % signs, e.g. '%'
 }
 
 const placeholder = "?"
@@ -114,16 +121,22 @@ func tokenize(q string) []token {
 			}
 
 		case c == '\'':
-			i = skipString(q, i, false)
-			toks = append(toks, token{tLiteral, placeholder})
+			end := skipString(q, i, false)
+			t := token{kind: tLiteral, text: placeholder}
+			if body := strings.TrimSuffix(q[i+1:end], "'"); body != "" {
+				t.leadPct, t.trailPct = body[0] == '%', body[len(body)-1] == '%'
+				t.onlyPct = strings.Trim(body, "%") == ""
+			}
+			toks = append(toks, t)
+			i = end
 
 		case (c == 'E' || c == 'e') && at(q, i+1) == '\'':
 			i = skipString(q, i+1, true)
-			toks = append(toks, token{tLiteral, placeholder})
+			toks = append(toks, token{kind: tLiteral, text: placeholder})
 
 		case (c == 'B' || c == 'b' || c == 'X' || c == 'x' || c == 'N' || c == 'n') && at(q, i+1) == '\'':
 			i = skipString(q, i+1, false)
-			toks = append(toks, token{tLiteral, placeholder})
+			toks = append(toks, token{kind: tLiteral, text: placeholder})
 
 		case c == '"':
 			j := i + 1
@@ -138,15 +151,16 @@ func tokenize(q string) []token {
 				}
 				j++
 			}
-			toks = append(toks, token{tQuoted, q[i:j]})
+			toks = append(toks, token{kind: tQuoted, text: q[i:j]})
 			i = j
 
 		case c == '$' && isDigit(at(q, i+1)): // $1 parameter
+			start := i
 			i++
 			for i < len(q) && isDigit(q[i]) {
 				i++
 			}
-			toks = append(toks, token{tLiteral, placeholder})
+			toks = append(toks, token{kind: tLiteral, text: placeholder, param: q[start:i]})
 
 		case c == '$': // $tag$ ... $tag$ dollar-quoted string
 			j := i + 1
@@ -154,7 +168,7 @@ func tokenize(q string) []token {
 				j++
 			}
 			if at(q, j) != '$' {
-				toks = append(toks, token{tOp, "$"})
+				toks = append(toks, token{kind: tOp, text: "$"})
 				i++
 				continue
 			}
@@ -165,7 +179,7 @@ func tokenize(q string) []token {
 			} else {
 				i = j + 1 + end + len(tag)
 			}
-			toks = append(toks, token{tLiteral, placeholder})
+			toks = append(toks, token{kind: tLiteral, text: placeholder})
 
 		case isDigit(c) || (c == '.' && isDigit(at(q, i+1))):
 			i = skipNumber(q, i)
@@ -173,18 +187,18 @@ func tokenize(q string) []token {
 			if n := len(toks); n > 0 && toks[n-1].text == "-" && (n == 1 || unaryContext(toks[n-2])) {
 				toks = toks[:n-1]
 			}
-			toks = append(toks, token{tLiteral, placeholder})
+			toks = append(toks, token{kind: tLiteral, text: placeholder})
 
 		case isIdentStart(c):
 			j := i + 1
 			for j < len(q) && isIdentChar(q[j]) {
 				j++
 			}
-			toks = append(toks, token{tIdent, q[i:j]})
+			toks = append(toks, token{kind: tIdent, text: q[i:j]})
 			i = j
 
 		case c == '(' || c == ')' || c == ',' || c == ';' || c == '.' || c == '[' || c == ']':
-			toks = append(toks, token{tPunct, string(c)})
+			toks = append(toks, token{kind: tPunct, text: string(c)})
 			i++
 
 		default: // operators: greedily take operator characters
@@ -199,7 +213,7 @@ func tokenize(q string) []token {
 			if j == i {
 				j = i + 1 // unknown byte (e.g. non-ASCII outside a string): keep as-is
 			}
-			toks = append(toks, token{tOp, q[i:j]})
+			toks = append(toks, token{kind: tOp, text: q[i:j]})
 			i = j
 		}
 	}
@@ -270,7 +284,7 @@ func collapse(toks []token) []token {
 				if n := len(out); n >= 2 && out[n-1].text == "," && out[n-2].kind == tGroup {
 					out = out[:n-1]
 				} else {
-					out = append(out, token{tGroup, "(...)"})
+					out = append(out, token{kind: tGroup, text: "(...)"})
 				}
 				i = end
 				continue
@@ -502,3 +516,73 @@ func init() {
 }
 
 func isKeyword(s string) bool { return keywords[strings.ToUpper(s)] }
+
+// template rebuilds the query with every literal replaced by a numbered bind
+// parameter, so it can be prepared and explained without knowing any values:
+//
+//	SELECT * FROM users WHERE email = 'a@b.com' AND id = $1
+//	-> SELECT * FROM users WHERE email = $2 AND id = $1
+//
+// Typed literals such as interval '1 day' become $n::interval. It returns ""
+// for empty input and for multi-statement queries, which cannot be prepared.
+func template(toks []token) string {
+	for len(toks) > 0 && toks[len(toks)-1].text == ";" {
+		toks = toks[:len(toks)-1]
+	}
+	if len(toks) == 0 {
+		return ""
+	}
+	next := 0
+	for _, t := range toks {
+		if t.text == ";" {
+			return ""
+		}
+		if t.param != "" {
+			if n, err := strconv.Atoi(t.param[1:]); err == nil && n > next {
+				next = n
+			}
+		}
+	}
+
+	var b strings.Builder
+	var prev token
+	for i := 0; i < len(toks); i++ {
+		t := toks[i]
+		out := t
+		switch {
+		case t.kind == tLiteral && t.param != "":
+			out.text = t.param
+		case t.kind == tLiteral && t.onlyPct:
+			out.text = "'%'" // a bare wildcard carries no data; keep it
+		case t.kind == tLiteral:
+			next++
+			out.text = "$" + strconv.Itoa(next)
+			// Keep a LIKE pattern's wildcards so EXPLAIN still sees a
+			// leading-% search: '%abc%' -> '%' || $1 || '%'.
+			if t.leadPct {
+				out.text = "'%' || " + out.text
+			}
+			if t.trailPct {
+				out.text += " || '%'"
+			}
+		case t.kind == tIdent && typedLiterals[strings.ToLower(t.text)] &&
+			i+1 < len(toks) && toks[i+1].kind == tLiteral && toks[i+1].param == "":
+			next++
+			out = token{kind: tLiteral, text: "$" + strconv.Itoa(next) + "::" + strings.ToLower(t.text)}
+			i++ // the literal is consumed
+		}
+		if b.Len() > 0 && spaceBetween(prev, out) {
+			b.WriteByte(' ')
+		}
+		b.WriteString(out.text)
+		prev = out
+	}
+	return b.String()
+}
+
+// typedLiterals are type names that can prefix a string literal, as in
+// DATE '2024-01-01'. A bare parameter cannot follow them, so they become casts.
+var typedLiterals = map[string]bool{
+	"interval": true, "date": true, "time": true, "timestamp": true, "timestamptz": true,
+	"uuid": true, "json": true, "jsonb": true, "inet": true, "cidr": true,
+}

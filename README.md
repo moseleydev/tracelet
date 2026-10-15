@@ -40,7 +40,10 @@ Change your app's database port from `5432` to `6433` and use your app as usual.
 
 - **Live topology:** every query flows from your app to the tables it touches, as a dot colored by its latency. Query nodes glow with traffic and are ranked by total time.
 - **Queries:** every query shape ranked by total time (calls × latency), with its share of all database time, p95, max, rows and errors.
-- **Query detail:** p50/p95 latency over time, calls over time, and the last error.
+- **Insights:** suggestions ranked by how much time they would save, each with a plain explanation and the exact fix: a missing index, a full table scan, an N+1 loop.
+- **Query detail:** p50/p95 latency over time, calls over time, the query plan, and the last error.
+
+![Tracelet Insights suggesting a missing index with the exact CREATE INDEX statement](docs/insights.jpg)
 
 Similar queries are grouped by shape, so 200 lookups with different ids count as one query. The terminal shows the same data:
 
@@ -49,6 +52,18 @@ Similar queries are grouped by shape, so 200 lookups with different ids count as
     4.00s    200  20.0ms  25.6ms  525.4ms     1       -  SELECT * FROM orders WHERE id = ?
   589.1ms     30  19.6ms  21.2ms   22.8ms     3       -  SELECT id, amount FROM orders WHERE id IN (...)
 ```
+
+### How suggestions work
+
+Every 15 seconds Tracelet runs `EXPLAIN` on the costliest queries to see how PostgreSQL executes them, then checks the plans and traffic patterns:
+
+| Detector | Finds | Suggests |
+|---|---|---|
+| `missing-index` | Large tables scanned to find a few rows | The exact `CREATE INDEX CONCURRENTLY`, including ORDER BY columns |
+| `full-scan` | Wildcard searches, functions on columns, unfiltered reads of big tables | A trigram or expression index, or how to narrow the query |
+| `n-plus-one` | The same query repeated back to back, once per row of a previous query | One query with `= ANY($1)`, a JOIN, or eager loading |
+
+`EXPLAIN` plans a query without running it, so this is safe even for UPDATE and DELETE. Tracelet also uses a read-only transaction with a 2-second timeout and its own connection, which never appears in your stats. Turn it off with `--analyze=false`.
 
 Stats are saved to `.tracelet/tracelet.db`. Browse them later with `tracelet studio` or `tracelet top`. Literal values and parameters are never saved or sent to the browser unless you pass `--capture-params`.
 

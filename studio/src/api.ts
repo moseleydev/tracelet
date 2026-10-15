@@ -42,12 +42,50 @@ export interface SeriesPoint {
   error?: string
 }
 
+export type Severity = 'info' | 'warning' | 'critical'
+
+export interface Finding {
+  hash: string
+  detector: string
+  severity: Severity
+  title: string
+  explanation: string
+  suggestion: string
+  fix?: string
+  updated_at: string
+  stats: Stats
+  share_of_time: number
+}
+
+export interface PlanNode {
+  node: string
+  relation?: string
+  schema?: string
+  index?: string
+  filter?: string
+  index_cond?: string
+  sort_key?: string[]
+  est_rows: number
+  total_cost: number
+  children?: PlanNode[]
+  table_rows?: number
+  indexes?: { name: string; columns: string[]; unique?: boolean }[]
+}
+
+export interface PlanRecord {
+  hash: string
+  explained_at: string
+  plan?: PlanNode
+  error?: string
+}
+
 export interface Info {
   version: string
   upstream?: string
   proxy?: string
   data: string
   capture_params: boolean
+  analyze: boolean
   started_at: string
   live: boolean
 }
@@ -79,7 +117,22 @@ export const api = {
   tables: (since: string) => get<TableStats[]>(`/api/tables?since=${since}`),
   series: (hash: string, since: string) =>
     get<SeriesPoint[]>(`/api/series?hash=${encodeURIComponent(hash)}&since=${since}`),
+  findings: (since: string) => get<Finding[]>(`/api/findings?since=${since}`),
+  plan: async (hash: string): Promise<PlanRecord | null> => {
+    const res = await fetch(`/api/plan?hash=${encodeURIComponent(hash)}`)
+    if (res.status === 404) return null
+    if (!res.ok) throw new Error(`plan: ${res.status}`)
+    return res.json() as Promise<PlanRecord>
+  },
 }
+
+export const severityLabel: Record<Severity, string> = {
+  critical: 'Critical',
+  warning: 'Warning',
+  info: 'Info',
+}
+
+export const severityRank: Record<Severity, number> = { critical: 2, warning: 1, info: 0 }
 
 // Latency classes. Thresholds match the CLI's colors.
 export type Speed = 'fast' | 'slow' | 'critical'

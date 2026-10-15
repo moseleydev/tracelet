@@ -8,8 +8,10 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/moseleydev/tracelet/analyzer"
 	"github.com/moseleydev/tracelet/core"
 	"github.com/moseleydev/tracelet/core/store"
+	"github.com/moseleydev/tracelet/detectors"
 )
 
 func runTop(args []string) error {
@@ -41,6 +43,7 @@ func runTop(args []string) error {
 		return nil
 	}
 	printTop(top, isTerminal(os.Stdout))
+	printFindings(st, from, isTerminal(os.Stdout))
 	return nil
 }
 
@@ -69,6 +72,35 @@ func printTop(stats []core.Stats, color bool) {
 	if len(stats) > 0 && stats[0].P95 >= 100*time.Millisecond {
 		fmt.Println(paint(ansiRed, fmt.Sprintf("\n%s is slow at p95 %s, touching %s.",
 			"The top query", fmtDur(stats[0].P95), tableList(stats[0].Fingerprint.Tables))))
+	}
+}
+
+// printFindings lists the analyzer's suggestions, most severe first.
+func printFindings(st *store.Store, since time.Time, color bool) {
+	sums, err := analyzer.Summaries(st, since)
+	if err != nil || len(sums) == 0 {
+		return
+	}
+	paint := func(code, s string) string {
+		if !color {
+			return s
+		}
+		return code + s + ansiReset
+	}
+	fmt.Printf("\nSuggestions (%d):\n", len(sums))
+	for _, s := range sums {
+		label := map[detectors.Severity]string{
+			detectors.Critical: paint(ansiRed, "● critical"),
+			detectors.Warning:  paint(ansiYellow, "● warning "),
+			detectors.Info:     paint(ansiDim, "● info    "),
+		}[s.Severity]
+		fmt.Printf("\n%s  %s  %s\n", label, s.Title, paint(ansiDim, fmt.Sprintf("(%.0f%% of time)", s.ShareOfTime*100)))
+		fmt.Printf("   %s\n", oneLine(s.Stats.Fingerprint.Query, 100))
+		if s.Fix != "" {
+			for _, line := range strings.Split(s.Fix, "\n") {
+				fmt.Printf("   %s\n", paint(ansiGreen, line))
+			}
+		}
 	}
 }
 

@@ -7,6 +7,8 @@
 package detectors
 
 import (
+	"encoding/json"
+	"fmt"
 	"sort"
 	"sync"
 
@@ -22,6 +24,28 @@ const (
 	Critical
 )
 
+// MarshalJSON writes a severity as its name: "info", "warning" or "critical".
+func (s Severity) MarshalJSON() ([]byte, error) { return json.Marshal(s.String()) }
+
+// UnmarshalJSON reads a severity name.
+func (s *Severity) UnmarshalJSON(b []byte) error {
+	var name string
+	if err := json.Unmarshal(b, &name); err != nil {
+		return err
+	}
+	switch name {
+	case "info":
+		*s = Info
+	case "warning":
+		*s = Warning
+	case "critical":
+		*s = Critical
+	default:
+		return fmt.Errorf("unknown severity %q", name)
+	}
+	return nil
+}
+
 func (s Severity) String() string {
 	switch s {
 	case Critical:
@@ -36,21 +60,67 @@ func (s Severity) String() string {
 // Input is everything a detector may look at for one fingerprint.
 type Input struct {
 	Stats core.Stats
+	// ShareOfTime is this fingerprint's fraction (0-1) of all time spent in
+	// the database over the same window: how much fixing it would matter.
+	ShareOfTime float64
 	// Events from a single trace (same TraceID) that contained this
 	// fingerprint. Empty when the app has no SDK context.
 	Trace []core.Event
 	// Plan is the EXPLAIN output for this fingerprint, if one was collected.
 	Plan *Plan
+	// Bursts describes back-to-back repeats on one connection, if any.
+	Bursts *core.Bursts
+	// Parent is the fingerprint that usually runs right before a burst.
+	Parent *core.Fingerprint
 }
 
 // Plan is an engine-neutral query plan tree.
 type Plan struct {
-	Node      string  `json:"node"` // e.g. "Seq Scan", "Index Scan", "COLLSCAN"
-	Relation  string  `json:"relation,omitempty"`
-	Filter    string  `json:"filter,omitempty"`
-	EstRows   float64 `json:"est_rows"`
-	TotalCost float64 `json:"total_cost"`
-	Children  []*Plan `json:"children,omitempty"`
+	Node      string   `json:"node"` // e.g. "Seq Scan", "Index Scan", "COLLSCAN"
+	Relation  string   `json:"relation,omitempty"`
+	Schema    string   `json:"schema,omitempty"`
+	Index     string   `json:"index,omitempty"`
+	Filter    string   `json:"filter,omitempty"`
+	IndexCond string   `json:"index_cond,omitempty"`
+	SortKey   []string `json:"sort_key,omitempty"`
+	EstRows   float64  `json:"est_rows"`
+	TotalCost float64  `json:"total_cost"`
+	Children  []*Plan  `json:"children,omitempty"`
+
+	// Filled in for nodes that read a table: its estimated size and the
+	// indexes it already has.
+	TableRows float64 `json:"table_rows,omitempty"`
+	Indexes   []Index `json:"indexes,omitempty"`
+}
+
+// Index is an existing index on a table.
+type Index struct {
+	Name    string   `json:"name"`
+	Columns []string `json:"columns"` // key columns or expressions, in order
+	Unique  bool     `json:"unique,omitempty"`
+}
+
+// Walk calls fn for p and every node below it, with each node's parent
+// (nil for the root).
+func (p *Plan) Walk(fn func(node, parent *Plan)) {
+	var walk func(n, parent *Plan)
+	walk = func(n, parent *Plan) {
+		fn(n, parent)
+		for _, c := range n.Children {
+			walk(c, n)
+		}
+	}
+	if p != nil {
+		walk(p, nil)
+	}
+}
+
+// Table returns the schema-qualified table name of a scan node.
+func (p *Plan) Table() string {
+	if p.Schema != "" {
+		return p.Schema + "." + p.Relation
+	}
+	return p.Relation
 }
 
 // Finding is a single recommendation shown in the studio.

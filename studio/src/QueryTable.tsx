@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { fmtCount, fmtMs, nsToMs, speedLabel, speedOf } from './api'
-import type { Stats } from './api'
+import type { Finding, Stats } from './api'
+import { SeverityChip } from './Insights'
 
 export function SpeedChip({ ms }: { ms: number }) {
   const s = speedOf(ms)
@@ -42,9 +43,10 @@ interface Props {
   stats: Stats[]
   selected: string | null
   onSelect: (hash: string) => void
+  issues: Map<string, Finding[]>
 }
 
-export function QueryTable({ stats, selected, onSelect }: Props) {
+export function QueryTable({ stats, selected, onSelect, issues }: Props) {
   const [sort, setSort] = useState<SortKey>('total')
   const [filter, setFilter] = useState('')
 
@@ -110,6 +112,12 @@ export function QueryTable({ stats, selected, onSelect }: Props) {
                   <td className="query">
                     <code>{s.fingerprint.query || '(empty query)'}</code>
                     <TableTags tables={s.fingerprint.tables} />
+                    {issues.get(s.fingerprint.hash)?.map((f) => (
+                      <div className="issue-line" key={f.detector}>
+                        <SeverityChip severity={f.severity} />
+                        <span>{f.title}</span>
+                      </div>
+                    ))}
                   </td>
                   <td className="num">
                     <div className="impact">

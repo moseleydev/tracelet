@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/moseleydev/tracelet/analyzer"
 	"github.com/moseleydev/tracelet/core"
 	"github.com/moseleydev/tracelet/core/aggregate"
 	"github.com/moseleydev/tracelet/core/store"
@@ -30,6 +31,7 @@ func runUp(args []string) error {
 	dataPath := fs.String("data", store.DefaultPath, "file where query stats are saved")
 	studioAddr := fs.String("studio", "127.0.0.1:4000", "address Tracelet Studio is served on; empty to disable")
 	openBrowser := fs.Bool("open", true, "open Tracelet Studio in your browser")
+	analyze := fs.Bool("analyze", true, "EXPLAIN the costliest queries (read-only, never executed) to find missing indexes and other problems")
 	fs.Parse(args)
 
 	if *db == "" {
@@ -83,6 +85,7 @@ func runUp(args []string) error {
 			Proxy:         ln.Addr().String(),
 			Data:          *dataPath,
 			CaptureParams: *captureParams,
+			Analyze:       *analyze,
 			StartedAt:     time.Now(),
 		}), hub)
 		if err != nil {
@@ -111,6 +114,17 @@ func runUp(args []string) error {
 		sink.Close()
 	}()
 
+	analyzed := make(chan struct{})
+	if *analyze {
+		a := &analyzer.Analyzer{Store: st, DatabaseURL: *db, Logf: logger.Printf}
+		go func() {
+			a.Run(ctx)
+			close(analyzed)
+		}()
+	} else {
+		close(analyzed)
+	}
+
 	color := isTerminal(os.Stdout)
 	started := time.Now()
 	var count int64
@@ -137,9 +151,11 @@ func runUp(args []string) error {
 		if err == nil {
 			fmt.Println("\nTop queries this session, by total time:")
 			printTop(top, color)
+			printFindings(st, started, color)
 			fmt.Println("\nRun \"tracelet top\" any time to see more.")
 		}
 	}
+	<-analyzed
 	return <-served
 }
 

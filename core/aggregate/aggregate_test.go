@@ -2,16 +2,27 @@ package aggregate
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/moseleydev/tracelet/core"
+	"github.com/moseleydev/tracelet/core/fingerprint"
 )
 
 type fakeSaver struct {
 	fps     []core.Fingerprint
 	rollups map[string]core.Rollup // latest saved state per hash@bucket
+	bursts  []core.Bursts
 	fail    bool
+}
+
+func (f *fakeSaver) AddBursts(deltas []core.Bursts) error {
+	if f.fail {
+		return errors.New("disk full")
+	}
+	f.bursts = append(f.bursts, deltas...)
+	return nil
 }
 
 func (f *fakeSaver) Save(fps []core.Fingerprint, rs []core.Rollup) error {
@@ -161,5 +172,90 @@ func TestRunDrainsAndFlushes(t *testing.T) {
 		if r.Count != 3 {
 			t.Fatalf("count = %d", r.Count)
 		}
+	}
+}
+
+// loop simulates an app on one connection: a parent query, then n child
+// queries back to back, each gap apart.
+func loop(a *Aggregator, conn uint64, at time.Time, n int, gap time.Duration) time.Time {
+	a.Add(core.Event{Query: "SELECT customer_id FROM orders LIMIT 20", StartedAt: at, Duration: time.Millisecond, ConnID: conn})
+	at = at.Add(time.Millisecond)
+	for i := 0; i < n; i++ {
+		at = at.Add(gap)
+		a.Add(core.Event{Query: fmt.Sprintf("SELECT email FROM customers WHERE id = %d", i), StartedAt: at, Duration: 200 * time.Microsecond, ConnID: conn})
+		at = at.Add(200 * time.Microsecond)
+	}
+	return at
+}
+
+func TestDetectsNPlusOneBursts(t *testing.T) {
+	saver := &fakeSaver{}
+	a := New(saver, false, nil)
+	at := t0
+	for i := 0; i < 3; i++ {
+		at = loop(a, 1, at, 20, 100*time.Microsecond)
+		at = at.Add(time.Second) // next request
+	}
+	a.Flush(true)
+
+	if len(saver.bursts) != 1 {
+		t.Fatalf("bursts = %+v", saver.bursts)
+	}
+	b := saver.bursts[0]
+	child := fingerprint.Of("SELECT email FROM customers WHERE id = 1").Hash
+	parent := fingerprint.Of("SELECT customer_id FROM orders LIMIT 20").Hash
+	if b.Hash != child || b.ParentHash != parent || b.Runs != 3 || b.Calls != 60 || b.MaxRun != 20 {
+		t.Fatalf("burst = %+v", b)
+	}
+}
+
+func TestIgnoresRepeatsThatAreNotBursts(t *testing.T) {
+	cases := map[string]func(a *Aggregator){
+		"separate requests far apart": func(a *Aggregator) {
+			loop(a, 1, t0, 20, 40*time.Millisecond)
+		},
+		"short runs": func(a *Aggregator) {
+			at := t0
+			for i := 0; i < 5; i++ {
+				at = loop(a, 1, at, minBurst-1, 100*time.Microsecond).Add(time.Second)
+			}
+		},
+		"no parent query": func(a *Aggregator) {
+			at := t0
+			for i := 0; i < 20; i++ {
+				a.Add(core.Event{Query: "SELECT 1", StartedAt: at, Duration: 100 * time.Microsecond, ConnID: 1})
+				at = at.Add(200 * time.Microsecond)
+			}
+		},
+	}
+	for name, run := range cases {
+		saver := &fakeSaver{}
+		a := New(saver, false, nil)
+		run(a)
+		a.Flush(true)
+		if len(saver.bursts) != 0 {
+			t.Errorf("%s: unexpected bursts %+v", name, saver.bursts)
+		}
+	}
+}
+
+func TestBurstsAreTrackedPerConnection(t *testing.T) {
+	saver := &fakeSaver{}
+	a := New(saver, false, nil)
+	// Two connections interleave their N+1 loops; each is still detected.
+	at := t0
+	for _, conn := range []uint64{1, 2} {
+		a.Add(core.Event{Query: "SELECT id FROM posts LIMIT 10", StartedAt: at, Duration: time.Millisecond, ConnID: conn})
+	}
+	at = at.Add(time.Millisecond)
+	for i := 0; i < 10; i++ {
+		for _, conn := range []uint64{1, 2} {
+			a.Add(core.Event{Query: "SELECT name FROM authors WHERE id = 1", StartedAt: at, Duration: 100 * time.Microsecond, ConnID: conn})
+		}
+		at = at.Add(300 * time.Microsecond)
+	}
+	a.Flush(true)
+	if len(saver.bursts) != 1 || saver.bursts[0].Runs != 2 || saver.bursts[0].Calls != 20 {
+		t.Fatalf("bursts = %+v", saver.bursts)
 	}
 }

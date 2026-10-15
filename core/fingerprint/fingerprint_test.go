@@ -96,6 +96,25 @@ func TestTables(t *testing.T) {
 	}
 }
 
+func TestTemplate(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"SELECT * FROM users WHERE id = 42", "SELECT * FROM users WHERE id = $1"},
+		{"SELECT * FROM t WHERE a = $1 AND b = 'x' AND c IN (1, 2)", "SELECT * FROM t WHERE a = $1 AND b = $2 AND c IN ($3, $4)"},
+		{"SELECT * FROM t WHERE created_at > now() - interval '1 day';", "SELECT * FROM t WHERE created_at > now() - $1::interval"},
+		{"UPDATE accounts SET balance = balance - 100 WHERE id = 7", "UPDATE accounts SET balance = balance - $1 WHERE id = $2"},
+		{"SELECT x::int FROM t -- note", "SELECT x::int FROM t"},
+		{"SELECT 1; SELECT 2", ""},
+		{"SELECT * FROM t WHERE email LIKE '%abc%' AND name LIKE 'bo%'", "SELECT * FROM t WHERE email LIKE '%' || $1 || '%' AND name LIKE $2 || '%'"},
+		{"SELECT * FROM t WHERE email LIKE '%' || $1 || '%'", "SELECT * FROM t WHERE email LIKE '%' || $1 || '%'"},
+		{"-- ping", ""},
+	}
+	for _, c := range cases {
+		if got := Of(c.in).Template; got != c.want {
+			t.Errorf("Of(%q).Template\n got  %q\n want %q", c.in, got, c.want)
+		}
+	}
+}
+
 func BenchmarkFingerprint(b *testing.B) {
 	q := "SELECT u.id, u.name, o.total FROM users u JOIN orders o ON o.user_id = u.id WHERE u.email = 'a@b.com' AND o.status IN ('paid', 'shipped') ORDER BY o.created_at DESC LIMIT 20"
 	for i := 0; i < b.N; i++ {

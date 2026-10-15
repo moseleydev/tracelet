@@ -54,6 +54,15 @@ Detectors turn query stats into recommendations. Each one is a single file in `d
    }
    ```
 
+   Your detector receives an `Input` with:
+
+   - `Stats`: calls, latency percentiles, rows and errors for one query shape. `Stats.Fingerprint` has the normalized query, its tables and an executable `Template`.
+   - `ShareOfTime`: this query's fraction of all database time, which is good for setting severity.
+   - `Plan`: the EXPLAIN plan tree (or nil), with `TableRows` and existing `Indexes` on every node that reads a table.
+   - `Bursts` and `Parent`: back-to-back repeats on one connection, and the query that ran before them.
+
+   See `missing_index.go`, `full_scan.go` and `n_plus_one.go` for complete examples.
+
 2. Add `detectors/your_detector_test.go` with at least one case that fires and one that does not.
 3. Run `make test` and open a PR.
 

@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { fmtCount, fmtMs, nsToMs, speedLabel, speedOf, usToMs } from './api'
-import type { LiveEvent, Speed, Stats, TableStats } from './api'
+import type { Finding, LiveEvent, Severity, Speed, Stats, TableStats } from './api'
+import { severityLabel } from './api'
 import { usePrefersReducedMotion } from './hooks'
 
 interface Props {
+  issues: Map<string, Finding[]>
   stats: Stats[]
   tables: TableStats[]
   subscribe: (l: (e: LiveEvent) => void) => () => void
@@ -29,6 +31,7 @@ interface QueryNode {
   h: number
   heat: number
   tables: string[]
+  issue: Finding | null // most severe finding, if any
 }
 
 interface TableNode {
@@ -108,6 +111,7 @@ function buildScene(
   height: number,
   stats: Stats[],
   tableStats: TableStats[],
+  issues: Map<string, Finding[]>,
   prev: Scene | null,
 ): Scene {
   const narrow = width < 640
@@ -131,11 +135,12 @@ function buildScene(
   const queries: QueryNode[] = shown.map((s, i) => {
     const old = prev?.byHash.get(s.fingerprint.hash)
     const ty = top + gap * (i + 0.5) - NODE_H / 2
+    const issue = issues.get(s.fingerprint.hash)?.[0] ?? null
     return {
       kind: 'query',
       hash: s.fingerprint.hash,
       stats: s,
-      label: truncate(ctx, s.fingerprint.query.replace(/\s+/g, ' '), qw - 26),
+      label: truncate(ctx, s.fingerprint.query.replace(/\s+/g, ' '), qw - (issue ? 46 : 26)),
       meta: `p95 ${fmtMs(nsToMs(s.p95))} · ${fmtCount(s.count)} calls · ${fmtMs(nsToMs(s.total))} total`,
       speed: speedOf(nsToMs(s.p95)),
       x: qx,
@@ -145,6 +150,7 @@ function buildScene(
       h: NODE_H,
       heat: old?.heat ?? 0,
       tables: s.fingerprint.tables ?? [],
+      issue,
     }
   })
 
@@ -167,6 +173,7 @@ function buildScene(
       h: NODE_H,
       heat: prev?.other?.heat ?? 0,
       tables: [],
+      issue: null,
     }
     queries.push(other)
   }
@@ -215,7 +222,7 @@ interface Hover {
   node: QueryNode | TableNode
 }
 
-export function Topology({ stats, tables, subscribe, live, selected, onSelect, loaded }: Props) {
+export function Topology({ issues, stats, tables, subscribe, live, selected, onSelect, loaded }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const sceneRef = useRef<Scene | null>(null)
@@ -252,10 +259,10 @@ export function Topology({ stats, tables, subscribe, live, selected, onSelect, l
     if (!ctx) return
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     const prev = sceneRef.current
-    sceneRef.current = buildScene(ctx, size.w, size.h, stats, tables, prev)
+    sceneRef.current = buildScene(ctx, size.w, size.h, stats, tables, issues, prev)
     // Particles follow paths of the old layout; drop them if it moved.
     if (!prev || prev.width !== size.w || prev.height !== size.h) particles.current = []
-  }, [stats, tables, size])
+  }, [stats, tables, issues, size])
 
   // Queue live events, spread over the batch interval so they don't clump.
   useEffect(() => {
@@ -471,6 +478,11 @@ function NodeTooltip({ hover, width }: { hover: Hover; width: number }) {
           Errors <b className="num err">{fmtCount(s.errors)}</b>
         </div>
       )}
+      {n.issue && (
+        <div className={`row tip-issue ${n.issue.severity}`}>
+          <b>{severityLabel[n.issue.severity]}:</b> {n.issue.title}
+        </div>
+      )}
       <div className="row dim">Click for details</div>
     </div>
   )
@@ -488,6 +500,8 @@ interface Colors {
   muted: string
   accent: string
   speed: Record<Speed, string>
+  severity: Record<Severity, string>
+  onSeverity: string
   glow: boolean
 }
 
@@ -504,6 +518,8 @@ function readColors(el: Element): Colors {
     muted: v('--muted'),
     accent: v('--accent'),
     speed: { fast: v('--good'), slow: v('--warning'), critical: v('--critical') },
+    severity: { critical: v('--critical'), warning: v('--warning'), info: v('--accent') },
+    onSeverity: '#0b0b0b',
     glow: v('--particle-glow') === '1',
   }
 }
@@ -584,6 +600,22 @@ function draw(
     ctx.font = `11px ${SANS}`
     ctx.fillStyle = c.muted
     ctx.fillText(q.meta, q.x + 16, q.y + 32)
+
+    // Issue badge: the analyzer found something to fix in this query.
+    if (q.issue) {
+      const bx = q.x + q.w - 16
+      const by = q.y + q.h / 2
+      ctx.beginPath()
+      ctx.arc(bx, by, 8, 0, Math.PI * 2)
+      ctx.fillStyle = c.severity[q.issue.severity]
+      ctx.fill()
+      ctx.fillStyle = q.issue.severity === 'info' ? '#ffffff' : c.onSeverity
+      ctx.font = `700 11px ${SANS}`
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText(q.issue.severity === 'info' ? 'i' : '!', bx, by + 0.5)
+      ctx.textAlign = 'left'
+    }
   }
 
   // Table nodes.
