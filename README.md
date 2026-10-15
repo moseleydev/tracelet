@@ -42,6 +42,17 @@ Change your app's database port from `5432` to `6433` and use your app as usual.
 16:06:10.450     1.29ms  ERROR      SELECT * FROM no_such_table;
 ```
 
+Stop it with Ctrl+C to see which queries cost the most time. Similar queries are grouped by shape, so 200 lookups with different ids count as one query:
+
+```
+    TOTAL  CALLS    MEAN     P95      MAX  ROWS  ERRORS
+    4.00s    200  20.0ms  25.6ms  525.4ms     1       -  SELECT * FROM orders WHERE id = ?
+  589.1ms     30  19.6ms  21.2ms   22.8ms     3       -  SELECT id, amount FROM orders WHERE id IN (...)
+  175.6ms      5  35.1ms  36.7ms   36.7ms     1       -  SELECT count(*) FROM orders WHERE email LIKE ?
+```
+
+Stats are saved to `.tracelet/tracelet.db`, so you can run `tracelet top` at any time. Literal values and parameters are never saved unless you pass `--capture-params`.
+
 Tracelet Studio, the visual interface, arrives in Phase 3.
 
 ## Supported databases
@@ -59,7 +70,7 @@ Tracelet Studio, the visual interface, arrives in Phase 3.
 |---------------|----------------------------------------------------------|
 | `cmd/tracelet`| The `tracelet` CLI                                        |
 | `proxy/`      | Wire-protocol proxies, one subpackage per database       |
-| `core/`       | Shared types, fingerprinting, aggregation, storage       |
+| `core/`       | Shared types, fingerprinting, aggregation, SQLite storage |
 | `detectors/`  | Recommendation rules, one file per detector              |
 | `studio/`     | Tracelet Studio (React + Vite)                            |
 | `sdks/`       | Optional helpers that tag queries with route and trace   |

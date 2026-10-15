@@ -19,12 +19,15 @@ Tracelet is built in phases. Each phase ends with something that runs. We open t
 - [x] SSL to the database (libpq `sslmode` semantics) and cancel-request forwarding
 - [x] `tracelet up` prints a live, color-coded query log
 
-## Phase 2: Brain
+## Phase 2: Brain ✅
 
-- [ ] Fingerprint queries with `pg_query_go`
-- [ ] Aggregate per fingerprint: count, p50/p95/p99, total time, rows
-- [ ] Local storage (DuckDB or SQLite)
-- [ ] Track which queries touch which tables
+- [x] Fingerprint queries: literals become `?`, `IN (1, 2, 3)` and multi-row `VALUES` collapse to `(...)`
+- [x] Aggregate per fingerprint in 10-second buckets: count, p50/p95/p99, max, total time, rows, errors
+- [x] Local storage in SQLite (`.tracelet/tracelet.db`)
+- [x] Track which queries touch which tables
+- [x] `tracelet top` ranks queries by total time
+
+Everything is pure Go, with no cgo, so Tracelet ships as a single binary for every OS. The fingerprinter is a tokenizer rather than a full SQL parser, and exact query plans come from `EXPLAIN` in Phase 4.
 
 ## Phase 3: Studio v1 (first public release)
 

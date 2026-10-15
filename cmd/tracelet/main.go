@@ -17,6 +17,7 @@ Usage:
 
 Commands:
   up        Start the capture proxy and log every query
+  top       Show the queries that cost the most time
   studio    Open Tracelet Studio for an existing session
   record    Record traffic to a .session file
   replay    Replay a .session file against a target database
@@ -36,6 +37,8 @@ func main() {
 	switch cmd {
 	case "up":
 		err = runUp(args)
+	case "top":
+		err = runTop(args)
 	case "studio", "record", "replay":
 		err = fmt.Errorf("%q is not implemented yet, see docs/ROADMAP.md", cmd)
 	case "version", "-v", "--version":

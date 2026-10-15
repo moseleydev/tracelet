@@ -16,3 +16,4 @@ studio/dist/
 .DS_Store
 .idea/
 .vscode/
+.tracelet/

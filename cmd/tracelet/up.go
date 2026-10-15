@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/moseleydev/tracelet/core"
+	"github.com/moseleydev/tracelet/core/aggregate"
+	"github.com/moseleydev/tracelet/core/store"
 	"github.com/moseleydev/tracelet/proxy"
 	"github.com/moseleydev/tracelet/proxy/postgres"
 )
@@ -24,6 +26,7 @@ func runUp(args []string) error {
 	listen := fs.String("listen", "127.0.0.1:6433", "address the proxy listens on; point your app here")
 	captureParams := fs.Bool("capture-params", false, "record bound parameter values (may contain personal data)")
 	quiet := fs.Bool("quiet", false, "do not print each query")
+	dataPath := fs.String("data", store.DefaultPath, "file where query stats are saved")
 	fs.Parse(args)
 
 	if *db == "" {
@@ -41,13 +44,20 @@ func runUp(args []string) error {
 		port = "5432"
 	}
 
+	st, err := store.Open(*dataPath)
+	if err != nil {
+		return fmt.Errorf("up: %w", err)
+	}
+	defer st.Close()
+	logger := log.New(os.Stderr, "tracelet: ", 0)
+
 	sink := proxy.NewSink(8192)
 	srv, err := postgres.New(postgres.Config{
 		Upstream:      net.JoinHostPort(host, port),
 		SSLMode:       u.Query().Get("sslmode"),
 		CaptureParams: *captureParams,
 		Sink:          sink,
-		Logf:          log.New(os.Stderr, "tracelet: ", 0).Printf,
+		Logf:          logger.Printf,
 	})
 	if err != nil {
 		return err
@@ -60,7 +70,8 @@ func runUp(args []string) error {
 	appURL := *u
 	appURL.Host = ln.Addr().String()
 	fmt.Printf("tracelet proxy  %s → %s\n", ln.Addr(), net.JoinHostPort(host, port))
-	fmt.Printf("point your app at  %s\n\n", appURL.Redacted())
+	fmt.Printf("point your app at  %s\n", appURL.Redacted())
+	fmt.Printf("saving stats to    %s\n\n", *dataPath)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -72,19 +83,31 @@ func runUp(args []string) error {
 	}()
 
 	color := isTerminal(os.Stdout)
+	started := time.Now()
 	var count int64
-	for e := range sink.Events() {
+	agg := aggregate.New(st, *captureParams, logger.Printf)
+	aggErr := agg.Run(sink.Events(), 2*time.Second, func(e core.Event, _ core.Fingerprint) {
 		count++
 		if !*quiet {
 			printEvent(e, color)
 		}
-	}
+	})
 
 	fmt.Printf("\n%d queries captured", count)
 	if d := sink.Dropped(); d > 0 {
 		fmt.Printf(", %d dropped (consumer too slow)", d)
 	}
 	fmt.Println()
+	if aggErr != nil {
+		logger.Printf("saving stats: %v", aggErr)
+	} else if count > 0 {
+		top, err := st.Top(started, 5)
+		if err == nil {
+			fmt.Println("\nTop queries this session, by total time:")
+			printTop(top, color)
+			fmt.Println("\nRun \"tracelet top\" any time to see more.")
+		}
+	}
 	return <-served
 }
 
