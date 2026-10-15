@@ -1,0 +1,36 @@
+:root {
+  --bg: #0b0f17;
+  --panel: #121826;
+  --border: #1f2937;
+  --text: #e5e7eb;
+  --muted: #8b95a7;
+  --fast: #3ee6a8;
+  --slow: #f5b74a;
+  --critical: #f2545b;
+
+  color-scheme: dark;
+  font-family: "Inter", system-ui, -apple-system, sans-serif;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+}
+
+code {
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 6px;
+}
