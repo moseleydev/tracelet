@@ -21,6 +21,8 @@ func TestNormalize(t *testing.T) {
 		{"SELECT now() - interval '1 day'", "SELECT now() - interval ?"},
 		{"SELECT  *\n\tFROM   t\nWHERE a=1", "SELECT * FROM t WHERE a = ?"},
 		{"SELECT 'unterminated", "SELECT ?"},
+		{"-- ping", "-- ping"},
+		{"  ", "(empty query)"},
 	}
 	for _, c := range cases {
 		if got := Of(c.in).Query; got != c.want {

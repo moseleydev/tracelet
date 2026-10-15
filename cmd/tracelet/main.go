@@ -16,9 +16,9 @@ Usage:
   tracelet <command> [flags]
 
 Commands:
-  up        Start the capture proxy and log every query
+  up        Start the capture proxy and Tracelet Studio
   top       Show the queries that cost the most time
-  studio    Open Tracelet Studio for an existing session
+  studio    Open Tracelet Studio on saved data, without the proxy
   record    Record traffic to a .session file
   replay    Replay a .session file against a target database
   version   Print the Tracelet version
@@ -39,7 +39,9 @@ func main() {
 		err = runUp(args)
 	case "top":
 		err = runTop(args)
-	case "studio", "record", "replay":
+	case "studio":
+		err = runStudio(args)
+	case "record", "replay":
 		err = fmt.Errorf("%q is not implemented yet, see docs/ROADMAP.md", cmd)
 	case "version", "-v", "--version":
 		fmt.Println("tracelet", version)

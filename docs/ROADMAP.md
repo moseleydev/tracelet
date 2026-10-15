@@ -29,14 +29,25 @@ Tracelet is built in phases. Each phase ends with something that runs. We open t
 
 Everything is pure Go, with no cgo, so Tracelet ships as a single binary for every OS. The fingerprinter is a tokenizer rather than a full SQL parser, and exact query plans come from `EXPLAIN` in Phase 4.
 
-## Phase 3: Studio v1 (first public release)
+## Phase 3: Studio v1 ✅
 
-- [ ] `tracelet up` starts the proxy and serves Studio on `:4000`
-- [ ] Live event stream over WebSocket
-- [ ] Live topology view: animated queries flowing to tables, colored by latency
-- [ ] Query explorer ranked by total time
-- [ ] Query detail: latency over time and sample queries
-- [ ] Demo app in `examples/` that shows Tracelet in under a minute
+- [x] `tracelet up` starts the proxy and serves Studio on `:4000`; `tracelet studio` browses saved data
+- [x] Live event stream over Server-Sent Events, batched every 100 ms and sampled under heavy load
+- [x] Live topology view: animated queries flowing to tables, colored by latency
+- [x] Query explorer ranked by total time, with share of time, sorting and filtering
+- [x] Query detail: p50/p95 latency over time, calls over time, last error
+- [x] Demo shop in `examples/shop` with a missing index, an N+1 loop and a broken query
+- [x] Failed prepares and binds are reported as errors (drivers like pgx prepare before executing)
+
+The UI is embedded in the Go binary and has no chart or animation dependencies: the topology is a 2D canvas, the charts are SVG. Light and dark themes follow the OS, and it works down to phone width.
+
+**Next:** open the repository to contributors (see "Before going public" below), then Phase 4.
+
+### Before going public
+
+- [ ] Add a contact address to CODE_OF_CONDUCT.md
+- [ ] Release binaries for macOS, Linux and Windows
+- [ ] Label 10–15 `good first issue`s (new detectors are ideal)
 
 ## Phase 4: Analyzer and recommendations
 

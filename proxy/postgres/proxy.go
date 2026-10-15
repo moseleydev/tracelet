@@ -286,7 +286,7 @@ func (s *Server) dialUpstream() (net.Conn, error) {
 // Message types whose bodies the tracker reads. Everything else, including
 // DataRow (the bulk of the traffic), is streamed through without copying.
 var frontendInspected = typeSet('Q', 'P', 'B', 'E', 'S', 'C')
-var backendInspected = typeSet('C', 'E', 'Z', 'I', 's')
+var backendInspected = typeSet('1', '2', 'C', 'E', 'Z', 'I', 's')
 
 func typeSet(types ...byte) *[256]bool {
 	var set [256]bool

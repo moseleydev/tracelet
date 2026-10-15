@@ -18,6 +18,7 @@ import (
 	"github.com/moseleydev/tracelet/core/store"
 	"github.com/moseleydev/tracelet/proxy"
 	"github.com/moseleydev/tracelet/proxy/postgres"
+	"github.com/moseleydev/tracelet/studio"
 )
 
 func runUp(args []string) error {
@@ -27,6 +28,8 @@ func runUp(args []string) error {
 	captureParams := fs.Bool("capture-params", false, "record bound parameter values (may contain personal data)")
 	quiet := fs.Bool("quiet", false, "do not print each query")
 	dataPath := fs.String("data", store.DefaultPath, "file where query stats are saved")
+	studioAddr := fs.String("studio", "127.0.0.1:4000", "address Tracelet Studio is served on; empty to disable")
+	openBrowser := fs.Bool("open", true, "open Tracelet Studio in your browser")
 	fs.Parse(args)
 
 	if *db == "" {
@@ -67,14 +70,40 @@ func runUp(args []string) error {
 		return fmt.Errorf("up: %w", err)
 	}
 
-	appURL := *u
-	appURL.Host = ln.Addr().String()
-	fmt.Printf("tracelet proxy  %s → %s\n", ln.Addr(), net.JoinHostPort(host, port))
-	fmt.Printf("point your app at  %s\n", appURL.Redacted())
-	fmt.Printf("saving stats to    %s\n\n", *dataPath)
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	var hub *studio.Hub
+	var ui *studioServer
+	if *studioAddr != "" {
+		hub = studio.NewHub()
+		ui, err = startStudio(*studioAddr, studio.New(st, hub, studio.Info{
+			Version:       version,
+			Upstream:      net.JoinHostPort(host, port),
+			Proxy:         ln.Addr().String(),
+			Data:          *dataPath,
+			CaptureParams: *captureParams,
+			StartedAt:     time.Now(),
+		}), hub)
+		if err != nil {
+			ln.Close()
+			return fmt.Errorf("up: %w", err)
+		}
+		defer ui.stop()
+	}
+
+	appURL := *u
+	appURL.Host = ln.Addr().String()
+	fmt.Printf("tracelet proxy     %s → %s\n", ln.Addr(), net.JoinHostPort(host, port))
+	fmt.Printf("point your app at  %s\n", appURL.Redacted())
+	fmt.Printf("saving stats to    %s\n", *dataPath)
+	if ui != nil {
+		fmt.Printf("tracelet studio    %s\n", ui.url)
+		if *openBrowser {
+			openURL(ui.url)
+		}
+	}
+	fmt.Println()
 
 	served := make(chan error, 1)
 	go func() {
@@ -86,8 +115,11 @@ func runUp(args []string) error {
 	started := time.Now()
 	var count int64
 	agg := aggregate.New(st, *captureParams, logger.Printf)
-	aggErr := agg.Run(sink.Events(), 2*time.Second, func(e core.Event, _ core.Fingerprint) {
+	aggErr := agg.Run(sink.Events(), time.Second, func(e core.Event, fp core.Fingerprint) {
 		count++
+		if hub != nil {
+			hub.Publish(e, fp)
+		}
 		if !*quiet {
 			printEvent(e, color)
 		}

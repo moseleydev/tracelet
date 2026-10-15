@@ -38,6 +38,8 @@ type opKind uint8
 
 const (
 	opSimple  opKind = iota // 'Q': completes at ReadyForQuery
+	opParse                 // 'P': completes at ParseComplete, or fails
+	opBind                  // 'B': completes at BindComplete, or fails
 	opExecute               // 'E': completes at CommandComplete/Error/...
 	opSync                  // 'S': marks the end of an extended-protocol batch
 )
@@ -71,6 +73,9 @@ func (t *tracker) frontend(typ byte, body []byte) {
 		name, rest := cstring(body)
 		q, _ := cstring(rest)
 		t.stmts[name] = q
+		// Tracked so that a failed prepare (e.g. a missing table) is still
+		// reported, even though no Execute follows it.
+		t.push(&op{kind: opParse, query: q, start: time.Now()})
 
 	case 'B': // Bind
 		name, rest := cstring(body)
@@ -80,6 +85,7 @@ func (t *tracker) frontend(typ byte, body []byte) {
 			params = bindParams(rest)
 		}
 		t.portals[name] = portal{query: t.stmts[stmt], params: params}
+		t.push(&op{kind: opBind, query: t.stmts[stmt], params: params, start: time.Now()})
 
 	case 'E': // Execute
 		name, _ := cstring(body)
@@ -113,6 +119,16 @@ func (t *tracker) backend(typ byte, body []byte) {
 	}
 
 	switch typ {
+	case '1': // ParseComplete
+		if head != nil && head.kind == opParse {
+			t.pop()
+		}
+
+	case '2': // BindComplete
+		if head != nil && head.kind == opBind {
+			t.pop()
+		}
+
 	case 'C': // CommandComplete
 		tag, _ := cstring(body)
 		rows := rowsFromTag(tag)
@@ -142,7 +158,7 @@ func (t *tracker) backend(typ byte, body []byte) {
 			if head.err == "" {
 				head.err = msg
 			}
-		case opExecute:
+		case opParse, opBind, opExecute:
 			head.err = msg
 			t.complete()
 		}
@@ -152,8 +168,8 @@ func (t *tracker) backend(typ byte, body []byte) {
 			t.complete()
 			return
 		}
-		// End of an extended batch. Executes still queued before the Sync
-		// were skipped by the server after an error, so they never ran.
+		// End of an extended batch. Steps still queued before the Sync were
+		// skipped by the server after an error, so they never ran.
 		for len(t.pending) > 0 {
 			o := t.pending[0]
 			t.pending = t.pending[1:]
@@ -170,11 +186,17 @@ func (t *tracker) push(o *op) {
 	t.mu.Unlock()
 }
 
-// complete pops the head operation and emits it. Caller holds t.mu.
-func (t *tracker) complete() {
+// pop discards the head operation. Caller holds t.mu.
+func (t *tracker) pop() *op {
 	o := t.pending[0]
 	t.pending[0] = nil
 	t.pending = t.pending[1:]
+	return o
+}
+
+// complete pops the head operation and emits it. Caller holds t.mu.
+func (t *tracker) complete() {
+	o := t.pop()
 
 	t.s.cfg.Sink.Emit(core.Event{
 		ID:        strconv.FormatUint(t.s.eventSeq.Add(1), 10),

@@ -42,11 +42,25 @@ func Of(query string) core.Fingerprint {
 		}
 	}
 
+	display := text.String()
+	if len(toks) == 0 {
+		// Nothing but comments or whitespace, such as pgx's "-- ping" health
+		// check. Show what was sent rather than a blank line.
+		display = strings.Join(strings.Fields(query), " ")
+		if len(display) > 80 {
+			display = display[:80] + "…"
+		}
+		if display == "" {
+			display = "(empty query)"
+		}
+		key.WriteString(display)
+	}
+
 	h := fnv.New64a()
 	h.Write([]byte(key.String()))
 	return core.Fingerprint{
 		Hash:   strconv.FormatUint(h.Sum64(), 16),
-		Query:  text.String(),
+		Query:  display,
 		Tables: tables(toks),
 	}
 }

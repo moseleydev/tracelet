@@ -5,7 +5,8 @@
 
 # Studio
 node_modules/
-studio/dist/
+studio/dist/*
+!studio/dist/.gitkeep
 
 # Tracelet data
 *.session

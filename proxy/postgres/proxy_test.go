@@ -323,6 +323,33 @@ func TestExtendedErrorSkipsRestOfBatch(t *testing.T) {
 	}
 }
 
+func TestFailedPrepareIsReported(t *testing.T) {
+	pg := startFakePostgres(t)
+	addr, sink := startProxy(t, pg.addr, false)
+	fe := connect(t, addr)
+
+	// Drivers such as pgx prepare first (Parse, Describe, Sync) and only
+	// execute if that succeeds, so a missing table fails with no Execute.
+	fe.Send(&pgproto3.Parse{Name: "s1", Query: "SELECT percent FROM boom WHERE code = $1"})
+	fe.Send(&pgproto3.Describe{ObjectType: 'S', Name: "s1"})
+	fe.Send(&pgproto3.Sync{})
+	flush(t, fe)
+	waitReady(t, fe)
+
+	e := nextEvent(t, sink)
+	if e.Query != "SELECT percent FROM boom WHERE code = $1" || !strings.Contains(e.Error, "42P01") {
+		t.Fatalf("failed prepare event: %+v", e)
+	}
+	expectNoEvent(t, sink)
+
+	// A successful prepare emits nothing by itself.
+	fe.Send(&pgproto3.Parse{Name: "s2", Query: "UPDATE t SET x = 1"})
+	fe.Send(&pgproto3.Sync{})
+	flush(t, fe)
+	waitReady(t, fe)
+	expectNoEvent(t, sink)
+}
+
 func TestSSLRequestDeclined(t *testing.T) {
 	pg := startFakePostgres(t)
 	addr, _ := startProxy(t, pg.addr, false)

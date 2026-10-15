@@ -1,66 +1,169 @@
-import type { CSSProperties } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import type { ReactNode } from 'react'
+import { fmtCount, fmtMs, nsToMs, windows } from './api'
+import type { WindowId } from './api'
+import { useInfo, useLive, useStats } from './hooks'
+import { QueryDetail } from './QueryDetail'
+import { QueryTable, SpeedChip } from './QueryTable'
+import { Topology } from './Topology'
 
-// Placeholder shell for Tracelet Studio. The live topology, query explorer
-// and plan views replace this in Phase 3 (see docs/ROADMAP.md).
+type View = 'topology' | 'queries'
+
+function readHash(): { view: View; query: string | null } {
+  const p = new URLSearchParams(window.location.hash.slice(1))
+  return { view: p.get('view') === 'queries' ? 'queries' : 'topology', query: p.get('q') }
+}
+
 export default function App() {
+  const initial = readHash()
+  const [view, setView] = useState<View>(initial.view)
+  const [selected, setSelected] = useState<string | null>(initial.query)
+  const [win, setWin] = useState<WindowId>(() => {
+    try {
+      return (localStorage.getItem('tracelet.window') as WindowId) || '15m'
+    } catch {
+      return '15m'
+    }
+  })
+
+  const info = useInfo()
+  const live = useLive()
+  const { top, tables, error } = useStats(win)
+
+  useEffect(() => {
+    const p = new URLSearchParams({ view })
+    if (selected) p.set('q', selected)
+    history.replaceState(null, '', `#${p}`)
+  }, [view, selected])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('tracelet.window', win)
+    } catch {
+      /* storage unavailable: the choice just isn't remembered */
+    }
+  }, [win])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setSelected(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  const totals = useMemo(() => {
+    const t = { calls: 0, time: 0, errors: 0 }
+    for (const s of top ?? []) {
+      t.calls += s.count
+      t.time += s.total
+      t.errors += s.errors
+    }
+    return t
+  }, [top])
+
+  const selectedStats = top?.find((s) => s.fingerprint.hash === selected) ?? null
+  const isLive = info.data?.live ?? true
+  const winLabel = windows.find((w) => w.id === win)?.label.toLowerCase() ?? win
+
   return (
-    <main style={styles.page}>
-      <header style={styles.header}>
-        <img src="/tracelet.svg" alt="" width={28} height={28} />
-        <strong>Tracelet Studio</strong>
-        <span style={styles.status}>
-          <span style={styles.dot} /> waiting for queries
-        </span>
+    <div className="app">
+      <header className="topbar">
+        <div className="brand">
+          <img src="/tracelet.svg" alt="" width={24} height={24} />
+          Tracelet Studio
+          {info.data && <small>{info.data.version}</small>}
+        </div>
+        <div className="conn" title={info.data?.data}>
+          <span className={`dot ${isLive ? live.status : ''}`} aria-hidden />
+          <span className="route">
+            {!info.data
+              ? 'Connecting…'
+              : isLive
+                ? `${statusText[live.status]} · app → ${info.data.proxy} → ${info.data.upstream}`
+                : `Saved data · ${info.data.data}`}
+          </span>
+        </div>
+        <span className="spacer" />
+        <label className="dim window-label" htmlFor="window" style={{ fontSize: 12 }}>
+          Window
+        </label>
+        <select id="window" className="select" value={win} onChange={(e) => setWin(e.target.value as WindowId)}>
+          {windows.map((w) => (
+            <option key={w.id} value={w.id}>
+              {w.label}
+            </option>
+          ))}
+        </select>
       </header>
 
-      <section style={styles.empty}>
-        <h1 style={styles.title}>No traffic yet</h1>
-        <p style={styles.muted}>
-          Start the proxy and point your app at it:
-        </p>
-        <p>
-          <code>tracelet up --db postgres://localhost:5432/app</code>
-        </p>
-        <p style={styles.muted}>
-          Then change your app&apos;s database port to <code>6433</code>.
-        </p>
+      <section className="kpis" aria-label="Summary">
+        {isLive && (
+          <>
+            <Kpi label="Queries / sec" value={live.metrics.qps < 10 ? live.metrics.qps.toFixed(1) : fmtCount(live.metrics.qps)} sub="last 5s" />
+            <Kpi label="Live p95" value={live.metrics.p95 ? <SpeedChip ms={live.metrics.p95} /> : '–'} sub="last 10s" />
+          </>
+        )}
+        <Kpi label="Time in database" value={fmtMs(nsToMs(totals.time))} sub={winLabel} />
+        <Kpi label="Queries" value={fmtCount(totals.calls)} sub={winLabel} />
+        <Kpi label="Query shapes" value={top ? String(top.length) : '–'} sub="distinct fingerprints" />
+        <Kpi
+          label="Errors"
+          value={totals.errors ? <span className="err">{fmtCount(totals.errors)}</span> : '0'}
+          sub={winLabel}
+        />
       </section>
-    </main>
+
+      <div className={`main ${selectedStats ? 'with-detail' : ''}`}>
+        <div className="pane">
+          <nav className="tabs" role="tablist" aria-label="Views">
+            <button role="tab" className="tab" aria-selected={view === 'topology'} onClick={() => setView('topology')}>
+              Live topology
+            </button>
+            <button role="tab" className="tab" aria-selected={view === 'queries'} onClick={() => setView('queries')}>
+              Queries
+            </button>
+            <span className="hint">Ranked by total time: calls × latency</span>
+          </nav>
+          {error && <div className="banner">Can’t reach Tracelet: {error}</div>}
+          {!isLive && (
+            <div className="banner">Viewing saved data. Run “tracelet up” to watch queries live.</div>
+          )}
+          {view === 'topology' ? (
+            <Topology
+              stats={top ?? []}
+              tables={tables ?? []}
+              subscribe={live.subscribe}
+              live={isLive && live.status === 'live'}
+              selected={selected}
+              onSelect={setSelected}
+              loaded={top !== null}
+            />
+          ) : (
+            <QueryTable stats={top ?? []} selected={selected} onSelect={setSelected} />
+          )}
+        </div>
+        {selectedStats && <QueryDetail stats={selectedStats} win={win} onClose={() => setSelected(null)} />}
+      </div>
+    </div>
   )
 }
 
-const styles: Record<string, CSSProperties> = {
-  page: { minHeight: '100vh', display: 'flex', flexDirection: 'column' },
-  header: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 12,
-    padding: '14px 20px',
-    borderBottom: '1px solid var(--border)',
-  },
-  status: {
-    marginLeft: 'auto',
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    color: 'var(--muted)',
-    fontSize: 14,
-  },
-  dot: {
-    width: 8,
-    height: 8,
-    borderRadius: '50%',
-    background: 'var(--slow)',
-  },
-  empty: {
-    flex: 1,
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    textAlign: 'center',
-    padding: 16,
-  },
-  title: { margin: '0 0 8px', fontSize: 28 },
-  muted: { color: 'var(--muted)', margin: '8px 0' },
+const statusText = {
+  connecting: 'Connecting',
+  live: 'Live',
+  offline: 'Offline',
+  disconnected: 'Disconnected',
+} as const
+
+function Kpi({ label, value, sub }: { label: string; value: ReactNode; sub: string }) {
+  return (
+    <div className="kpi">
+      <div className="label">{label}</div>
+      <div className="value num">
+        {value}
+        <span className="sub">{sub}</span>
+      </div>
+    </div>
+  )
 }

@@ -2,6 +2,8 @@
 
 **See every query your app sends to its database: how long it took, how often it runs, and how to make it faster.**
 
+![Tracelet Studio showing live queries flowing from an app to its tables](docs/studio.jpg)
+
 Tracelet sits between your application and your database as a lightweight proxy. It works with any language or framework, with no code changes. Tracelet Studio then shows your traffic as a live, animated map: slow queries glow red, N+1 loops show up as staircases, and full-table scans come with the exact index that fixes them.
 
 > **Status: early development.** Tracelet is being built in the open. See the [roadmap](docs/ROADMAP.md) for what works today and what is next.
@@ -34,32 +36,36 @@ make build
 ./bin/tracelet up --db postgres://user:pass@localhost:5432/app
 ```
 
-Change your app's database port from `5432` to `6433` and use your app as usual. Every query appears in your terminal with its latency and row count:
+Change your app's database port from `5432` to `6433` and use your app as usual. Tracelet Studio opens at <http://localhost:4000>:
 
-```
-16:06:10.277   152.24ms      1 rows  SELECT count(*) FROM orders WHERE email LIKE '%abc%';
-16:06:10.434    16.03ms      1 rows  SELECT * FROM orders WHERE id = 42;
-16:06:10.450     1.29ms  ERROR      SELECT * FROM no_such_table;
-```
+- **Live topology:** every query flows from your app to the tables it touches, as a dot colored by its latency. Query nodes glow with traffic and are ranked by total time.
+- **Queries:** every query shape ranked by total time (calls × latency), with its share of all database time, p95, max, rows and errors.
+- **Query detail:** p50/p95 latency over time, calls over time, and the last error.
 
-Stop it with Ctrl+C to see which queries cost the most time. Similar queries are grouped by shape, so 200 lookups with different ids count as one query:
+Similar queries are grouped by shape, so 200 lookups with different ids count as one query. The terminal shows the same data:
 
 ```
     TOTAL  CALLS    MEAN     P95      MAX  ROWS  ERRORS
     4.00s    200  20.0ms  25.6ms  525.4ms     1       -  SELECT * FROM orders WHERE id = ?
   589.1ms     30  19.6ms  21.2ms   22.8ms     3       -  SELECT id, amount FROM orders WHERE id IN (...)
-  175.6ms      5  35.1ms  36.7ms   36.7ms     1       -  SELECT count(*) FROM orders WHERE email LIKE ?
 ```
 
-Stats are saved to `.tracelet/tracelet.db`, so you can run `tracelet top` at any time. Literal values and parameters are never saved unless you pass `--capture-params`.
+Stats are saved to `.tracelet/tracelet.db`. Browse them later with `tracelet studio` or `tracelet top`. Literal values and parameters are never saved or sent to the browser unless you pass `--capture-params`.
 
-Tracelet Studio, the visual interface, arrives in Phase 3.
+### Try it with the demo shop
+
+The demo simulates an online store with realistic problems: a missing index, an N+1 loop, an unindexed aggregate, wildcard search and a broken query.
+
+```bash
+./bin/tracelet up --db postgres://localhost:5432/postgres
+go run ./examples/shop --db postgres://localhost:6433/postgres
+```
 
 ## Supported databases
 
 | Database   | Status        |
 |------------|---------------|
-| PostgreSQL | In progress   |
+| PostgreSQL | Supported     |
 | MySQL      | Planned       |
 | MongoDB    | Planned       |
 | Redis      | Planned       |
@@ -83,8 +89,9 @@ You need Go 1.25+ and Node 20+.
 
 ```bash
 make test        # Go tests (set TRACELET_TEST_POSTGRES_URL to include integration tests)
-make build       # builds bin/tracelet
-make studio-dev  # runs Tracelet Studio with hot reload
+make build       # builds Tracelet Studio and bin/tracelet with the UI embedded
+make build-go    # builds bin/tracelet only (no Node needed)
+make studio-dev  # runs Tracelet Studio with hot reload against a running `tracelet up`
 ```
 
 ## Contributing

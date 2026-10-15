@@ -102,6 +102,12 @@ func TestIntegrationPgx(t *testing.T) {
 	if _, err := conn.Exec(ctx, "SELECT * FROM missing_table"); err == nil {
 		t.Fatal("expected an error for a missing table")
 	}
+	// With arguments, pgx prepares first, so the error comes from Parse and
+	// no Execute is ever sent.
+	var x int
+	if err := conn.QueryRow(ctx, "SELECT x FROM missing_prepared WHERE id = $1", 1).Scan(&x); err == nil {
+		t.Fatal("expected an error for a missing table")
+	}
 
 	// Collect what the proxy saw.
 	conn.Close(ctx)
@@ -140,6 +146,9 @@ func TestIntegrationPgx(t *testing.T) {
 	}
 	if e := find("SELECT * FROM missing_table"); !strings.Contains(e.Error, "42P01") {
 		t.Errorf("error event: %+v", e)
+	}
+	if e := find("SELECT x FROM missing_prepared"); !strings.Contains(e.Error, "42P01") {
+		t.Errorf("failed-prepare event: %+v", e)
 	}
 }
 
