@@ -9,13 +9,15 @@ Tracelet is built in phases. Each phase ends with something that runs. We open t
 - [x] License (Apache-2.0), README, CONTRIBUTING, Code of Conduct
 - [x] CI: Go vet/test/build, Studio lint/build
 
-## Phase 1: Capture engine (PostgreSQL)
+## Phase 1: Capture engine (PostgreSQL) ✅
 
-- [ ] Transparent TCP proxy: the app behaves exactly as without it
-- [ ] Parse the Postgres wire protocol (simple and extended queries)
-- [ ] Emit events with query, duration, rows and errors
-- [ ] Non-blocking event channel; hot-path overhead under 0.5 ms
-- [ ] Redact parameters by default
+- [x] Transparent TCP proxy: the app behaves exactly as without it
+- [x] Parse the Postgres wire protocol (simple and extended queries)
+- [x] Emit events with query, duration, rows and errors
+- [x] Non-blocking event channel; hot-path overhead under 0.5 ms (measured ~0.05 ms on localhost)
+- [x] Redact parameters by default (`--capture-params` to opt in)
+- [x] SSL to the database (libpq `sslmode` semantics) and cancel-request forwarding
+- [x] `tracelet up` prints a live, color-coded query log
 
 ## Phase 2: Brain
 

@@ -29,13 +29,20 @@ your app ──► tracelet proxy (:6433) ──► your database (:5432)
 
 ## Quick start
 
-> Not usable yet. This is the target experience for the first release.
-
 ```bash
-tracelet up --db postgres://user:pass@localhost:5432/app
+make build
+./bin/tracelet up --db postgres://user:pass@localhost:5432/app
 ```
 
-Change your app's database port from `5432` to `6433`, use your app as usual, and open <http://localhost:4000>.
+Change your app's database port from `5432` to `6433` and use your app as usual. Every query appears in your terminal with its latency and row count:
+
+```
+16:06:10.277   152.24ms      1 rows  SELECT count(*) FROM orders WHERE email LIKE '%abc%';
+16:06:10.434    16.03ms      1 rows  SELECT * FROM orders WHERE id = 42;
+16:06:10.450     1.29ms  ERROR      SELECT * FROM no_such_table;
+```
+
+Tracelet Studio, the visual interface, arrives in Phase 3.
 
 ## Supported databases
 
@@ -64,7 +71,7 @@ Change your app's database port from `5432` to `6433`, use your app as usual, an
 You need Go 1.25+ and Node 20+.
 
 ```bash
-make test        # Go tests
+make test        # Go tests (set TRACELET_TEST_POSTGRES_URL to include integration tests)
 make build       # builds bin/tracelet
 make studio-dev  # runs Tracelet Studio with hot reload
 ```

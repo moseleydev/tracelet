@@ -3,7 +3,6 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"os"
 )
@@ -17,7 +16,7 @@ Usage:
   tracelet <command> [flags]
 
 Commands:
-  up        Start the capture proxy and Tracelet Studio
+  up        Start the capture proxy and log every query
   studio    Open Tracelet Studio for an existing session
   record    Record traffic to a .session file
   replay    Replay a .session file against a target database
@@ -51,19 +50,4 @@ func main() {
 		fmt.Fprintln(os.Stderr, "tracelet:", err)
 		os.Exit(1)
 	}
-}
-
-func runUp(args []string) error {
-	fs := flag.NewFlagSet("up", flag.ExitOnError)
-	db := fs.String("db", "", "upstream database URL, e.g. postgres://user:pass@localhost:5432/app")
-	listen := fs.String("listen", "127.0.0.1:6433", "address the proxy listens on; point your app here")
-	studio := fs.String("studio", "127.0.0.1:4000", "address Tracelet Studio is served on")
-	fs.Parse(args)
-
-	if *db == "" {
-		return fmt.Errorf("up: --db is required")
-	}
-	_ = listen
-	_ = studio
-	return fmt.Errorf("up: the capture proxy lands in Phase 1, see docs/ROADMAP.md")
 }
