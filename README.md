@@ -2,7 +2,7 @@
 
 **See every query your app sends to its database: how long it took, how often it runs, and how to make it faster.**
 
-![Tracelet Studio showing live queries flowing from an app to its tables](docs/studio.jpg)
+![Tracelet Studio: live queries flowing from each route to its tables, colored by latency, with issues flagged](docs/demo.gif)
 
 Tracelet sits between your application and your database as a lightweight proxy. It works with any language or framework, with no code changes. Tracelet Studio then shows your traffic as a live, animated map: slow queries glow red, N+1 loops show up as staircases, and full-table scans come with the exact index that fixes them.
 
@@ -48,6 +48,8 @@ Change your app's database port from `5432` to `6433` and use your app as usual.
 - **Live topology:** every query flows from your app to the tables it touches, as a dot colored by its latency. Query nodes glow with traffic and are ranked by total time.
 - **Queries:** every query shape ranked by total time (calls × latency), with its share of all database time, p95, max, rows and errors.
 - **Requests:** with the [SDK](sdks) (Node or Python, one line of setup), queries are grouped by request. You see routes ranked by database time, and a waterfall of every query a request ran, where N+1 loops show up as a staircase.
+
+![A request waterfall: one query, then the same lookup 20 times in a row, an N+1 loop](docs/requests.jpg)
 - **Insights:** suggestions ranked by how much time they would save, each with a plain explanation and the exact fix: a missing index, a full table scan, an N+1 loop.
 - **Query detail:** p50/p95 latency over time, calls over time, the query plan, and the last error.
 
