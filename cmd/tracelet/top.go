@@ -101,7 +101,26 @@ func printFindings(st *store.Store, since time.Time, color bool) {
 				fmt.Printf("   %s\n", paint(ansiGreen, line))
 			}
 		}
+		if sim := s.Simulation; sim != nil {
+			switch {
+			case sim.Unavailable != "":
+				fmt.Printf("   %s\n", paint(ansiDim, "what-if: "+sim.Unavailable))
+			case sim.UsesIndex && sim.Speedup > 0:
+				fmt.Printf("   what-if: ~%s less work per call, by planner estimate %s\n", fmtFactor(sim.Speedup),
+					paint(ansiDim, fmt.Sprintf("(cost %.0f -> %.1f with a HypoPG hypothetical index; real gains are usually smaller)", sim.CostBefore, sim.CostAfter)))
+			default:
+				fmt.Printf("   %s\n", paint(ansiYellow, "what-if: PostgreSQL would not use this index for this query"))
+			}
+		}
 	}
+}
+
+// fmtFactor prints a speedup: 213 -> "213x", 4.26 -> "4.3x".
+func fmtFactor(x float64) string {
+	if x >= 10 {
+		return fmt.Sprintf("%.0fx", x)
+	}
+	return fmt.Sprintf("%.1fx", x)
 }
 
 func tableList(tables []string) string {

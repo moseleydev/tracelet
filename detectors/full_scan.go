@@ -45,6 +45,7 @@ func (fullScan) Detect(in Input) []Finding {
 	rows := fmtRows(scan.TableRows)
 
 	if col := leadingWildcardColumn(scan.Filter); col != "" {
+		idx := &IndexSuggestion{Table: table, Columns: []string{col + " gin_trgm_ops"}, Method: "gin", Extension: "pg_trgm"}
 		return []Finding{{
 			Detector: "full-scan",
 			Severity: max(sev, Warning),
@@ -52,8 +53,8 @@ func (fullScan) Detect(in Input) []Finding {
 			Explanation: fmt.Sprintf("A LIKE pattern that starts with %% can't use a regular index, so every search reads all %s rows of %s. "+
 				"A trigram index can answer these searches directly.", rows, scan.Relation),
 			Suggestion: "Enable pg_trgm and add a trigram index on the searched column. For word-based search, PostgreSQL full-text search is another option.",
-			Fix: fmt.Sprintf("CREATE EXTENSION IF NOT EXISTS pg_trgm;\nCREATE INDEX CONCURRENTLY %s ON %s USING gin (%s gin_trgm_ops);",
-				indexName(table, []string{col}, "trgm_idx"), table, col),
+			Fix:        "CREATE EXTENSION IF NOT EXISTS pg_trgm;\n" + idx.SQL(indexName(table, []string{col}, "trgm_idx"), true) + ";",
+			Index:      idx,
 		}}
 	}
 
@@ -62,6 +63,7 @@ func (fullScan) Detect(in Input) []Finding {
 			continue
 		}
 		expr := fmt.Sprintf("%s(%s)", c.fn, c.column)
+		idx := &IndexSuggestion{Table: table, Columns: []string{"(" + expr + ")"}}
 		return []Finding{{
 			Detector: "full-scan",
 			Severity: max(sev, Warning),
@@ -69,7 +71,8 @@ func (fullScan) Detect(in Input) []Finding {
 			Explanation: fmt.Sprintf("The filter wraps %s in %s(), so even an index on %s can't be used and every call reads all %s rows. "+
 				"An index on the expression itself can.", c.column, c.fn, c.column, rows),
 			Suggestion: "Create an expression index that matches the filter exactly.",
-			Fix:        fmt.Sprintf("CREATE INDEX CONCURRENTLY %s ON %s ((%s));", indexName(table, []string{c.fn, c.column}, "idx"), table, expr),
+			Fix:        idx.SQL(indexName(table, []string{c.fn, c.column}, "idx"), true) + ";",
+			Index:      idx,
 		}}
 	}
 

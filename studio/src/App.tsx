@@ -193,7 +193,7 @@ function Kpi({ label, value, sub }: { label: string; value: ReactNode; sub: stri
     <div className="kpi">
       <div className="label">{label}</div>
       <div className="value num">
-        {value}
+        <span className="v">{value}</span>
         <span className="sub">{sub}</span>
       </div>
     </div>

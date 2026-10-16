@@ -63,6 +63,8 @@ Every 15 seconds Tracelet runs `EXPLAIN` on the costliest queries to see how Pos
 | `full-scan` | Wildcard searches, functions on columns, unfiltered reads of big tables | A trigram or expression index, or how to narrow the query |
 | `n-plus-one` | The same query repeated back to back, once per row of a previous query | One query with `= ANY($1)`, a JOIN, or eager loading |
 
+**What-if estimates.** If the database has the [HypoPG](https://github.com/HypoPG/hypopg) extension, Tracelet tests each suggested index before you create it. It adds the index as a *hypothetical* index, which exists only in the query planner for one connection and is never built, plans the query again, and shows the estimated reduction in work (for example "~674× less work") and whether PostgreSQL would use the index at all. Suggestions the planner would ignore are downgraded. To enable it, install the HypoPG package for your PostgreSQL version and run `CREATE EXTENSION hypopg;`. Tracelet never installs extensions itself. Planner cost is an estimate, and measured speedups are usually smaller, because every call also has fixed costs such as the network round trip.
+
 `EXPLAIN` plans a query without running it, so this is safe even for UPDATE and DELETE. Tracelet also uses a read-only transaction with a 2-second timeout and its own connection, which never appears in your stats. Turn it off with `--analyze=false`.
 
 Stats are saved to `.tracelet/tracelet.db`. Browse them later with `tracelet studio` or `tracelet top`. Literal values and parameters are never saved or sent to the browser unless you pass `--capture-params`.

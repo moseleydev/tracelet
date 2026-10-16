@@ -78,6 +78,11 @@ var migrations = []string{
 		last_seen   INTEGER NOT NULL
 	);
 	`,
+	// v3: suggested indexes and their what-if simulations.
+	`
+	ALTER TABLE findings ADD COLUMN idx TEXT NOT NULL DEFAULT '';        -- JSON IndexSuggestion
+	ALTER TABLE findings ADD COLUMN simulation TEXT NOT NULL DEFAULT ''; -- JSON Simulation
+	`,
 }
 
 var schemaVersion = 1 + len(migrations)

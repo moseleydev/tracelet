@@ -60,7 +60,72 @@ func setup(t *testing.T) (string, *pgx.Conn) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Exec(context.Background(), `DROP TABLE IF EXISTS tl_orders, tl_customers`) })
+	// Enable HypoPG where the server has it, for the what-if tests.
+	db.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS hypopg`)
 	return url, db
+}
+
+func hasHypoPG(t *testing.T, db *pgx.Conn) bool {
+	var ok bool
+	db.QueryRow(context.Background(), `SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'hypopg')`).Scan(&ok)
+	return ok
+}
+
+func TestSimulate(t *testing.T) {
+	url, db := setup(t)
+	ctx := context.Background()
+	x, err := Connect(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer x.Close(ctx)
+
+	template := fingerprint.Of("SELECT id, status FROM tl_orders WHERE customer_id = 42 ORDER BY created_at DESC LIMIT 20").Template
+	plan, err := x.Explain(ctx, template)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs := detectors.Run(detectors.Input{Plan: plan, Stats: core.Stats{Count: 100}})
+	if len(fs) == 0 || fs[0].Index == nil {
+		t.Fatalf("expected an index suggestion, got %+v", fs)
+	}
+	sim := x.Simulate(ctx, template, *fs[0].Index)
+
+	if !hasHypoPG(t, db) {
+		// Without HypoPG there is no estimate, just instructions.
+		if !strings.Contains(sim.Unavailable, "CREATE EXTENSION hypopg") || sim.Speedup != 0 {
+			t.Fatalf("simulation without hypopg = %+v", sim)
+		}
+		t.Skip("hypopg not available on this server; checked the fallback message only")
+	}
+
+	if sim.Unavailable != "" || !sim.UsesIndex || sim.CostAfter >= sim.CostBefore || sim.Speedup < 10 {
+		t.Fatalf("simulation = %+v", sim)
+	}
+	t.Logf("estimated speedup %.0fx (cost %.1f -> %.1f)", sim.Speedup, sim.CostBefore, sim.CostAfter)
+
+	// The hypothetical index must not leak into later plans.
+	plan, err = x.Explain(ctx, template)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Walk(func(n, _ *detectors.Plan) {
+		if strings.Contains(n.Index, "btree") || len(n.Indexes) > 1 {
+			t.Fatalf("hypothetical index leaked into a later plan: %+v", n)
+		}
+	})
+
+	// An index the query can't use is reported as unused.
+	useless := x.Simulate(ctx, template, detectors.IndexSuggestion{Table: "public.tl_orders", Columns: []string{"status"}})
+	if useless.Unavailable != "" || useless.UsesIndex || useless.Speedup != 0 {
+		t.Fatalf("useless index simulation = %+v", useless)
+	}
+
+	// GIN indexes are outside what HypoPG can model.
+	gin := x.Simulate(ctx, template, detectors.IndexSuggestion{Table: "public.tl_customers", Columns: []string{"email gin_trgm_ops"}, Method: "gin", Extension: "pg_trgm"})
+	if !strings.Contains(gin.Unavailable, "btree") {
+		t.Fatalf("gin simulation = %+v", gin)
+	}
 }
 
 func TestExplainRealPlans(t *testing.T) {
@@ -178,5 +243,12 @@ func TestPassProducesFindings(t *testing.T) {
 	plans, _ := st.Plans()
 	if plans[slow.Hash].Plan == nil || plans[fast.Hash].Plan == nil {
 		t.Fatalf("plans not stored: %+v", plans)
+	}
+	// The index suggestion carries a what-if result (an estimate, or why
+	// there is none), and it survives a reload from the store.
+	for _, s := range sums {
+		if s.Detector == "missing-index" && (s.Simulation == nil || (s.Simulation.Unavailable == "" && s.Simulation.Speedup < 2)) {
+			t.Fatalf("missing-index simulation = %+v", s.Simulation)
+		}
 	}
 }

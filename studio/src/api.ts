@@ -55,6 +55,24 @@ export interface Finding {
   updated_at: string
   stats: Stats
   share_of_time: number
+  index?: { table: string; columns: string[]; method?: string; extension?: string }
+  simulation?: Simulation
+}
+
+/** A what-if estimate from a HypoPG hypothetical index. */
+export interface Simulation {
+  at: string
+  unavailable?: string
+  cost_before?: number
+  cost_after?: number
+  uses_index: boolean
+  speedup?: number
+}
+
+/** Formats a speedup factor: 213 -> "213×", 4.26 -> "4.3×". */
+export function fmtSpeedup(x: number): string {
+  if (x >= 100) return `${Math.round(x).toLocaleString()}×`
+  return `${x.toFixed(x < 10 ? 1 : 0)}×`
 }
 
 export interface PlanNode {

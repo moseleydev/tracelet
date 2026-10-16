@@ -10,7 +10,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/moseleydev/tracelet/core"
 )
@@ -131,6 +133,71 @@ type Finding struct {
 	Explanation string   `json:"explanation"`   // why it is slow, in plain words
 	Suggestion  string   `json:"suggestion"`    // what to do
 	Fix         string   `json:"fix,omitempty"` // ready-to-run SQL, when possible
+
+	// Index is set when the fix is a new index, so the analyzer can test it
+	// with a hypothetical index before anyone creates it.
+	Index *IndexSuggestion `json:"index,omitempty"`
+	// Simulation is the analyzer's what-if estimate for Index. Detectors
+	// leave it empty.
+	Simulation *Simulation `json:"simulation,omitempty"`
+}
+
+// IndexSuggestion describes an index to create.
+type IndexSuggestion struct {
+	Table string `json:"table"` // schema-qualified
+	// Column definitions in order, exactly as they go in the column list:
+	// "customer_id", "created_at DESC", "(lower(email))", "email gin_trgm_ops".
+	Columns   []string `json:"columns"`
+	Method    string   `json:"method,omitempty"`    // access method; empty means btree
+	Extension string   `json:"extension,omitempty"` // extension the index needs, e.g. pg_trgm
+}
+
+// SQL renders the CREATE INDEX statement. With an empty name, PostgreSQL
+// picks one.
+func (s IndexSuggestion) SQL(name string, concurrently bool) string {
+	var b strings.Builder
+	b.WriteString("CREATE INDEX ")
+	if concurrently {
+		b.WriteString("CONCURRENTLY ")
+	}
+	if name != "" {
+		b.WriteString(name + " ")
+	}
+	b.WriteString("ON " + s.Table + " ")
+	if s.Method != "" {
+		b.WriteString("USING " + s.Method + " ")
+	}
+	b.WriteString("(" + strings.Join(s.Columns, ", ") + ")")
+	return b.String()
+}
+
+// Simulatable reports whether HypoPG can model this index. It supports
+// btree, hash and brin, but not GIN or GiST, and not indexes that need an
+// extension the database may not have yet.
+func (s IndexSuggestion) Simulatable() bool {
+	switch s.Method {
+	case "", "btree", "hash", "brin":
+		return s.Extension == ""
+	}
+	return false
+}
+
+// Simulation is a what-if estimate: the planner's cost for the query now,
+// and with the suggested index in place (simulated, never created).
+type Simulation struct {
+	At time.Time `json:"at"`
+	// Unavailable explains why no estimate could be made, e.g. the hypopg
+	// extension is not installed. The other fields are then zero.
+	Unavailable string  `json:"unavailable,omitempty"`
+	CostBefore  float64 `json:"cost_before,omitempty"`
+	CostAfter   float64 `json:"cost_after,omitempty"`
+	// UsesIndex reports whether the planner would actually use the index.
+	UsesIndex bool `json:"uses_index"`
+	// Speedup is CostBefore / CostAfter: how many times less work the
+	// planner expects. Planner cost is not time: measured speedups are
+	// usually smaller, since every call also pays fixed costs such as the
+	// network round trip.
+	Speedup float64 `json:"speedup,omitempty"`
 }
 
 // Detector inspects one fingerprint and returns zero or more findings.

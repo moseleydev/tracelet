@@ -49,6 +49,11 @@ func TestMissingIndexWithSortKey(t *testing.T) {
 	if f.Severity != Critical || !strings.Contains(f.Explanation, "~300,000 rows") || !strings.Contains(f.Explanation, "already sorted") {
 		t.Fatalf("finding = %+v", f)
 	}
+	// The same index, in the form HypoPG can simulate.
+	if f.Index == nil || !f.Index.Simulatable() ||
+		f.Index.SQL("", false) != "CREATE INDEX ON public.shop_orders (customer_id, created_at DESC)" {
+		t.Fatalf("index suggestion = %+v", f.Index)
+	}
 }
 
 func TestMissingIndexEqualityThenRange(t *testing.T) {
@@ -80,6 +85,9 @@ func TestFullScanLeadingWildcard(t *testing.T) {
 	if !strings.Contains(f.Fix, "USING gin (email gin_trgm_ops)") || !strings.Contains(f.Fix, "CREATE EXTENSION IF NOT EXISTS pg_trgm") {
 		t.Fatalf("fix = %s", f.Fix)
 	}
+	if f.Index == nil || f.Index.Simulatable() {
+		t.Fatalf("GIN trigram indexes can't be simulated by HypoPG: %+v", f.Index)
+	}
 	// The missing-index detector must not recommend a useless btree here.
 	none(t, missingIndex{}, Input{Stats: stats(30, 0, ""), Plan: plan}, "LIKE with leading wildcard")
 }
@@ -89,6 +97,9 @@ func TestFullScanFunctionOnColumn(t *testing.T) {
 	f := only(t, fullScan{}, Input{Stats: stats(30, 20*time.Millisecond, ""), Plan: plan})
 	if f.Fix != "CREATE INDEX CONCURRENTLY users_lower_email_idx ON public.users ((lower(email)));" {
 		t.Fatalf("fix = %s", f.Fix)
+	}
+	if f.Index == nil || !f.Index.Simulatable() {
+		t.Fatalf("expression index should be simulatable: %+v", f.Index)
 	}
 }
 

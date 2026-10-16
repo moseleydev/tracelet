@@ -91,12 +91,14 @@ func (missingIndex) Detect(in Input) []Finding {
 	if in.Stats.P95 >= 100*time.Millisecond || in.ShareOfTime >= 0.25 || best.TableRows >= 1_000_000 {
 		sev = Critical
 	}
+	idx := &IndexSuggestion{Table: table, Columns: cols}
 	return []Finding{{
 		Detector:    "missing-index",
 		Severity:    sev,
 		Title:       fmt.Sprintf("Missing index on %s (%s)", best.Relation, strings.Join(cols, ", ")),
 		Explanation: explanation,
 		Suggestion:  "Create the index below. CONCURRENTLY builds it without blocking writes, but it can't run inside a transaction block.",
-		Fix:         fmt.Sprintf("CREATE INDEX CONCURRENTLY %s ON %s (%s);", indexName(table, cols, "idx"), table, strings.Join(cols, ", ")),
+		Fix:         idx.SQL(indexName(table, cols, "idx"), true) + ";",
+		Index:       idx,
 	}}
 }

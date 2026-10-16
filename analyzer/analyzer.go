@@ -24,11 +24,16 @@ type Analyzer struct {
 
 	explainer *Explainer
 	lastErr   string
+
+	// What-if results by hash|fix, reused until the query is re-explained.
+	sims       map[string]detectors.Simulation
+	simsLoaded bool
 }
 
 const (
 	maxCandidates     = 50              // only the top queries by total time
 	explainsPerPass   = 5               // keep the load on the database tiny
+	simsPerPass       = 5               // each what-if is two more EXPLAINs
 	replanAfter       = 2 * time.Minute // notice new indexes soon after they are added
 	retryFailedAfter  = 30 * time.Minute
 	minCallsToExplain = 3
@@ -105,7 +110,12 @@ func (a *Analyzer) Pass(ctx context.Context) error {
 		return err
 	}
 
+	if !a.simsLoaded {
+		a.loadSimulations()
+	}
+
 	// Explain the costliest queries whose plan is missing or stale.
+	explainedNow := map[string]bool{}
 	budget := explainsPerPass
 	var connErr error
 	for _, s := range candidates {
@@ -143,9 +153,11 @@ func (a *Analyzer) Pass(ctx context.Context) error {
 			return err
 		}
 		plans[fp.Hash] = rec
+		explainedNow[fp.Hash] = true
 	}
 
 	// Run the detectors and replace each candidate's findings.
+	simBudget := simsPerPass
 	evaluated := map[string]bool{}
 	for _, s := range candidates {
 		hash := s.Fingerprint.Hash
@@ -161,7 +173,11 @@ func (a *Analyzer) Pass(ctx context.Context) error {
 				in.Parent = &p
 			}
 		}
-		if err := a.Store.ReplaceFindings(hash, detectors.Run(in)); err != nil {
+		findings := detectors.Run(in)
+		for i := range findings {
+			a.attachSimulation(ctx, &findings[i], hash, fps[hash].Template, explainedNow[hash], &simBudget)
+		}
+		if err := a.Store.ReplaceFindings(hash, findings); err != nil {
 			return err
 		}
 	}
@@ -183,6 +199,57 @@ func (a *Analyzer) Pass(ctx context.Context) error {
 	}
 	a.lastErr = ""
 	return nil
+}
+
+// attachSimulation adds a what-if estimate to a finding that suggests an
+// index. Results are reused until the query is explained again, so each
+// suggestion costs two extra EXPLAINs every few minutes at most.
+func (a *Analyzer) attachSimulation(ctx context.Context, f *detectors.Finding, hash, template string, fresh bool, budget *int) {
+	if f.Index == nil {
+		return
+	}
+	key := hash + "|" + f.Fix
+	sim, ok := a.sims[key]
+	if !ok || fresh {
+		switch {
+		case !f.Index.Simulatable():
+			sim, ok = detectors.Simulation{At: time.Now(), Unavailable: notSimulatable(*f.Index)}, true
+		case *budget > 0:
+			x, err := a.connect(ctx)
+			if err != nil {
+				break
+			}
+			*budget--
+			sim, ok = x.Simulate(ctx, template, *f.Index), true
+		}
+		if ok {
+			a.sims[key] = sim
+		}
+	}
+	if !ok {
+		return
+	}
+	f.Simulation = &sim
+	if sim.Unavailable == "" && !sim.UsesIndex {
+		// Don't push an index the planner says it would ignore.
+		f.Severity = detectors.Info
+		f.Explanation += " However, a simulation with a hypothetical index shows PostgreSQL would not use it for this query, so test it before creating it."
+	}
+}
+
+// loadSimulations restores what-if results saved by an earlier run.
+func (a *Analyzer) loadSimulations() {
+	a.sims = map[string]detectors.Simulation{}
+	a.simsLoaded = true
+	existing, err := a.Store.Findings()
+	if err != nil {
+		return
+	}
+	for _, f := range existing {
+		if f.Simulation != nil {
+			a.sims[f.Hash+"|"+f.Fix] = *f.Simulation
+		}
+	}
 }
 
 func (a *Analyzer) connect(ctx context.Context) (*Explainer, error) {

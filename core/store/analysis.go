@@ -78,9 +78,10 @@ func (s *Store) ReplaceFindings(hash string, findings []detectors.Finding) error
 	now := time.Now().UnixNano()
 	for _, f := range findings {
 		if _, err := tx.Exec(
-			`INSERT OR REPLACE INTO findings (hash, detector, severity, title, explanation, suggestion, fix, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT OR REPLACE INTO findings (hash, detector, severity, title, explanation, suggestion, fix, updated_at, idx, simulation)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			hash, f.Detector, int(f.Severity), f.Title, f.Explanation, f.Suggestion, f.Fix, now,
+			jsonOrEmpty(f.Index), jsonOrEmpty(f.Simulation),
 		); err != nil {
 			return err
 		}
@@ -91,7 +92,7 @@ func (s *Store) ReplaceFindings(hash string, findings []detectors.Finding) error
 // Findings returns every current finding, most severe first.
 func (s *Store) Findings() ([]StoredFinding, error) {
 	rows, err := s.db.Query(
-		`SELECT hash, detector, severity, title, explanation, suggestion, fix, updated_at FROM findings`)
+		`SELECT hash, detector, severity, title, explanation, suggestion, fix, updated_at, idx, simulation FROM findings`)
 	if err != nil {
 		return nil, err
 	}
@@ -101,8 +102,21 @@ func (s *Store) Findings() ([]StoredFinding, error) {
 		var f StoredFinding
 		var sev int
 		var at int64
-		if err := rows.Scan(&f.Hash, &f.Detector, &sev, &f.Title, &f.Explanation, &f.Suggestion, &f.Fix, &at); err != nil {
+		var idx, sim string
+		if err := rows.Scan(&f.Hash, &f.Detector, &sev, &f.Title, &f.Explanation, &f.Suggestion, &f.Fix, &at, &idx, &sim); err != nil {
 			return nil, err
+		}
+		if idx != "" {
+			f.Index = &detectors.IndexSuggestion{}
+			if json.Unmarshal([]byte(idx), f.Index) != nil {
+				f.Index = nil
+			}
+		}
+		if sim != "" {
+			f.Simulation = &detectors.Simulation{}
+			if json.Unmarshal([]byte(sim), f.Simulation) != nil {
+				f.Simulation = nil
+			}
 		}
 		f.Severity = detectors.Severity(sev)
 		f.UpdatedAt = time.Unix(0, at)
@@ -115,6 +129,15 @@ func (s *Store) Findings() ([]StoredFinding, error) {
 		return out[i].Hash < out[j].Hash
 	})
 	return out, rows.Err()
+}
+
+// jsonOrEmpty encodes v, or returns "" for a nil pointer.
+func jsonOrEmpty[T any](v *T) string {
+	if v == nil {
+		return ""
+	}
+	b, _ := json.Marshal(v)
+	return string(b)
 }
 
 // AddBursts adds newly observed bursts to the running totals.

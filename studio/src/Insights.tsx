@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { fmtCount, fmtMs, nsToMs, severityLabel } from './api'
-import type { Finding, Severity } from './api'
+import { fmtCount, fmtMs, fmtSpeedup, nsToMs, severityLabel } from './api'
+import type { Finding, Severity, Simulation } from './api'
 import { SpeedChip } from './QueryTable'
 
 export function SeverityChip({ severity }: { severity: Severity }) {
@@ -35,6 +35,51 @@ export function CopyButton({ text, label = 'Copy' }: { text: string; label?: str
   )
 }
 
+/** The result of testing a suggested index as a hypothetical index. */
+export function WhatIf({ sim }: { sim: Simulation }) {
+  if (sim.unavailable) {
+    return <p className="whatif-note dim">No speedup estimate: {sim.unavailable}</p>
+  }
+  if (!sim.uses_index || !sim.speedup || !sim.cost_before || !sim.cost_after) {
+    return (
+      <div className="whatif">
+        <div className="whatif-head">What-if</div>
+        <p>
+          With this index simulated, PostgreSQL still would not use it for this query. Check the suggestion before creating it.
+        </p>
+      </div>
+    )
+  }
+  const after = Math.max(0.5, (sim.cost_after / sim.cost_before) * 100)
+  return (
+    <div className="whatif">
+      <div className="whatif-head">
+        What-if
+        <span className="dim"> · simulated with a hypothetical index, nothing was created</span>
+      </div>
+      <p className="whatif-headline">
+        About <b>{fmtSpeedup(sim.speedup)}</b> less work per call, by the planner’s estimate
+      </p>
+      <div className="whatif-bars num" role="img" aria-label={`Planner cost ${Math.round(sim.cost_before)} now, ${sim.cost_after.toFixed(1)} with the index`}>
+        <span className="lbl">Now</span>
+        <span className="track">
+          <i className="now" style={{ width: '100%' }} />
+        </span>
+        <span className="val">{Math.round(sim.cost_before).toLocaleString()}</span>
+        <span className="lbl">With index</span>
+        <span className="track">
+          <i className="after" style={{ width: `${after}%` }} />
+        </span>
+        <span className="val">{sim.cost_after.toFixed(sim.cost_after < 10 ? 1 : 0)}</span>
+      </div>
+      <p className="caption">
+        Planner cost, not a measurement. Real speedups are usually smaller, because every call also has fixed costs such as the
+        network round trip. Once the index exists, the latency chart shows the measured change.
+      </p>
+    </div>
+  )
+}
+
 export function FindingBody({ f, compact = false }: { f: Finding; compact?: boolean }) {
   return (
     <>
@@ -43,6 +88,7 @@ export function FindingBody({ f, compact = false }: { f: Finding; compact?: bool
         <strong>What to do: </strong>
         {f.suggestion}
       </p>
+      {f.simulation && <WhatIf sim={f.simulation} />}
       {f.fix && (
         <div className="fix">
           <div className="fix-head">
@@ -96,6 +142,11 @@ export function Insights({ findings, analyze, live, onSelect }: Props) {
           <header>
             <SeverityChip severity={f.severity} />
             <h3>{f.title}</h3>
+            {f.simulation?.uses_index && (f.simulation.speedup ?? 0) > 0 && (
+              <span className="speedup-chip num" title="Planner estimate with a hypothetical index (HypoPG)">
+                ~{fmtSpeedup(f.simulation.speedup ?? 0)} less work (est.)
+              </span>
+            )}
           </header>
           <div className="impact-line num">
             <span className="share-bar" aria-hidden>

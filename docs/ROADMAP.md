@@ -58,7 +58,7 @@ The UI is embedded in the Go binary and has no chart or animation dependencies: 
 - [x] Insights tab, issue badges in the topology and query list, suggestions in `tracelet top`
 - [x] Findings clear themselves once fixed (plans refresh every 2 minutes)
 - [ ] More detectors (good first issues): unbounded query, `SELECT *`, duplicate reads, `OFFSET` pagination, unused indexes
-- [ ] What-if index simulation with `hypopg`: show the estimated speedup before creating an index
+- [x] What-if index simulation with HypoPG: estimated reduction in work, and whether the planner would use the index, before creating it (btree, hash and brin; GIN/GiST can't be simulated)
 
 ## Phase 5: Request context
 

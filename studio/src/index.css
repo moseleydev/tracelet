@@ -246,6 +246,14 @@ code,
   gap: 8px;
 }
 
+.kpi .value {
+  flex-wrap: wrap;
+}
+
+.kpi .value .v {
+  white-space: nowrap;
+}
+
 .kpi .sub {
   color: var(--muted);
   font-size: 12px;
@@ -1240,4 +1248,95 @@ code,
     padding-left: 16px;
     padding-right: 16px;
   }
+}
+
+/* ---------- what-if ---------- */
+
+.speedup-chip {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--good-text);
+  border: 1px solid color-mix(in srgb, var(--good) 45%, transparent);
+  border-radius: 999px;
+  padding: 1px 9px;
+  white-space: nowrap;
+}
+
+.whatif {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--surface);
+}
+
+.whatif-head {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.whatif-head .dim {
+  font-weight: 400;
+}
+
+.whatif p {
+  margin: 6px 0 0;
+}
+
+.whatif-headline {
+  font-size: 14px;
+}
+
+.whatif-headline b {
+  color: var(--good-text);
+  font-size: 16px;
+}
+
+.whatif-bars {
+  display: grid;
+  grid-template-columns: auto minmax(60px, 1fr) auto;
+  align-items: center;
+  gap: 6px 10px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.whatif-bars .track {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.whatif-bars i {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  border-radius: 4px;
+}
+
+.whatif-bars i.now {
+  background: var(--critical);
+}
+
+.whatif-bars i.after {
+  background: var(--good);
+}
+
+.whatif-bars .val {
+  text-align: right;
+  color: var(--text);
+}
+
+.whatif .caption {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.whatif-note {
+  margin: 8px 0 0;
+  font-size: 12px;
 }

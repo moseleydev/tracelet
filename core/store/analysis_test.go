@@ -80,7 +80,9 @@ func TestPlansRoundTrip(t *testing.T) {
 func TestReplaceFindings(t *testing.T) {
 	s, _ := open(t)
 	s.ReplaceFindings("a", []detectors.Finding{
-		{Detector: "missing-index", Severity: detectors.Critical, Title: "Missing index"},
+		{Detector: "missing-index", Severity: detectors.Critical, Title: "Missing index",
+			Index:      &detectors.IndexSuggestion{Table: "public.orders", Columns: []string{"customer_id"}},
+			Simulation: &detectors.Simulation{CostBefore: 3559, CostAfter: 16.5, UsesIndex: true, Speedup: 215.7}},
 		{Detector: "n-plus-one", Severity: detectors.Warning, Title: "N+1"},
 	})
 	s.ReplaceFindings("b", []detectors.Finding{{Detector: "full-scan", Severity: detectors.Info, Title: "Scan"}})
@@ -91,6 +93,12 @@ func TestReplaceFindings(t *testing.T) {
 	}
 	if len(all) != 3 || all[0].Severity != detectors.Critical || all[2].Severity != detectors.Info {
 		t.Fatalf("findings = %+v", all)
+	}
+	if ix, sim := all[0].Index, all[0].Simulation; ix == nil || ix.Columns[0] != "customer_id" || sim == nil || sim.Speedup != 215.7 || !sim.UsesIndex {
+		t.Fatalf("index/simulation lost: %+v %+v", ix, sim)
+	}
+	if all[1].Index != nil || all[1].Simulation != nil {
+		t.Fatalf("findings without an index should have none: %+v", all[1])
 	}
 
 	// Fixed: the index was added, so the finding goes away.
