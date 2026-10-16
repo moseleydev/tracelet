@@ -29,11 +29,18 @@ your app ──► tracelet proxy (:6433) ──► your database (:5432)
 3. **Recommend.** Detectors inspect stats and query plans to flag full scans, missing indexes, N+1 patterns and more, each with a suggested fix.
 4. **Visualize.** Tracelet Studio shows it all live, and lets you record, replay and simulate traffic.
 
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/moseleydev/tracelet/main/install.sh | sh
+```
+
+You can also run `brew install moseleydev/tap/tracelet`, or download a binary for macOS, Linux or Windows from [Releases](https://github.com/moseleydev/tracelet/releases). Each one is a single file with no dependencies, and Studio is built in.
+
 ## Quick start
 
 ```bash
-make build
-./bin/tracelet up --db postgres://user:pass@localhost:5432/app
+tracelet up --db postgres://user:pass@localhost:5432/app
 ```
 
 Change your app's database port from `5432` to `6433` and use your app as usual. Tracelet Studio opens at <http://localhost:4000>:
@@ -73,8 +80,8 @@ Every 15 seconds Tracelet runs `EXPLAIN` on the costliest queries to see how Pos
 Record real traffic, then replay it against a staging copy to see how a change performs before it reaches production:
 
 ```bash
-./bin/tracelet up --db postgres://localhost:5432/app --record      # or press Record in Studio
-./bin/tracelet replay .tracelet/sessions/<session>.trc.gz --target postgres://localhost:5432/app_staging
+tracelet up --db postgres://localhost:5432/app --record      # or press Record in Studio
+tracelet replay .tracelet/sessions/<session>.trc.gz --target postgres://localhost:5432/app_staging
 ```
 
 - **Exact.** Sessions capture each query at the wire-protocol level, binary parameters included, so a replay sends exactly what your app sent, whatever its language or ORM.
@@ -100,7 +107,7 @@ Stats are saved to `.tracelet/tracelet.db`. Browse them later with `tracelet stu
 The demo simulates an online store with realistic problems: a missing index, an N+1 loop, an unindexed aggregate, wildcard search and a broken query.
 
 ```bash
-./bin/tracelet up --db postgres://localhost:5432/postgres
+tracelet up --db postgres://localhost:5432/postgres
 go run ./examples/shop --db postgres://localhost:6433/postgres
 ```
 
