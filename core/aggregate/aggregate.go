@@ -6,6 +6,7 @@ package aggregate
 
 import (
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/moseleydev/tracelet/core"
@@ -170,6 +171,9 @@ func (a *Aggregator) add(e *core.Event) core.Fingerprint {
 	if e.Error != "" {
 		r.Errors++
 		r.LastError = e.Error
+		if !a.captureParams {
+			r.LastError = redactValues(e.Error)
+		}
 	}
 	if e.Duration >= r.SlowDuration {
 		r.SlowDuration = e.Duration
@@ -372,6 +376,30 @@ func (a *Aggregator) safeAdd(e *core.Event, onEvent func(core.Event, core.Finger
 	if onEvent != nil {
 		onEvent(*e, fp)
 	}
+}
+
+// redactValues removes data values from a PostgreSQL error message, keeping
+// identifiers. Values appear single-quoted, or double-quoted after a colon
+// (`invalid input syntax for type integer: "abc"`); identifiers appear
+// double-quoted after a word (`relation "users" does not exist`).
+func redactValues(msg string) string {
+	var b strings.Builder
+	for i := 0; i < len(msg); i++ {
+		c := msg[i]
+		value := c == '\'' || (c == '"' && i >= 2 && msg[i-2] == ':' && msg[i-1] == ' ')
+		if !value {
+			b.WriteByte(c)
+			continue
+		}
+		end := strings.IndexByte(msg[i+1:], c)
+		if end < 0 {
+			b.WriteString(msg[i:i+1] + "?")
+			break
+		}
+		b.WriteString(msg[i:i+1] + "?" + msg[i:i+1])
+		i += end + 1
+	}
+	return b.String()
 }
 
 // Source supplies events in batches. *proxy.Sink implements it.

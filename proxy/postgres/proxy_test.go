@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -400,12 +401,15 @@ func TestCancelRequestForwarded(t *testing.T) {
 	}
 	defer c.Close()
 	fe := pgproto3.NewFrontend(c, c)
-	fe.Send(&pgproto3.CancelRequest{ProcessID: 42, SecretKey: 99})
+	// A 32-byte key, as PostgreSQL 18 (protocol 3.2) issues; older servers
+	// use 4 bytes. Either way the request is forwarded byte for byte.
+	key := bytes.Repeat([]byte{0xab}, 32)
+	fe.Send(&pgproto3.CancelRequest{ProcessID: 42, SecretKey: key})
 	flush(t, fe)
 
 	select {
 	case cr := <-pg.cancels:
-		if cr.ProcessID != 42 || cr.SecretKey != 99 {
+		if cr.ProcessID != 42 || !bytes.Equal(cr.SecretKey, key) {
 			t.Fatalf("cancel request = %+v", cr)
 		}
 	case <-time.After(2 * time.Second):

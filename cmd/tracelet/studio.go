@@ -24,7 +24,12 @@ func runStudio(args []string) error {
 	dataPath := fs.String("data", store.DefaultPath, "data file written by tracelet up")
 	addr := fs.String("studio", "127.0.0.1:4000", "address to serve Tracelet Studio on")
 	openBrowser := fs.Bool("open", true, "open Tracelet Studio in your browser")
+	public := fs.Bool("studio-public", false, "allow serving Studio on a non-local address (it has no login)")
 	fs.Parse(args)
+
+	if err := checkStudioAddr(*addr, *public); err != nil {
+		return fmt.Errorf("studio: %w", err)
+	}
 
 	if !store.Exists(*dataPath) {
 		return fmt.Errorf("studio: no data at %s; run \"tracelet up\" first", *dataPath)
@@ -39,6 +44,7 @@ func runStudio(args []string) error {
 		Version:   version,
 		Data:      *dataPath,
 		StartedAt: time.Now(),
+		Public:    *public,
 	}), nil)
 	if err != nil {
 		return fmt.Errorf("studio: %w", err)
@@ -54,6 +60,20 @@ func runStudio(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	<-ctx.Done()
+	return nil
+}
+
+// checkStudioAddr refuses to expose Studio beyond this machine unless the
+// user asked for it, and warns when they did.
+func checkStudioAddr(addr string, public bool) error {
+	if addr == "" || studio.IsLoopback(addr) {
+		return nil
+	}
+	if !public {
+		return fmt.Errorf("refusing to serve Studio on %s: it has no login, so anyone who can reach it would see your queries. "+
+			"Use a local address such as 127.0.0.1:4000, or add --studio-public if you really mean it", addr)
+	}
+	fmt.Fprintf(os.Stderr, "tracelet: warning: Studio is served on %s without a login. Anyone who can reach it can see your query data.\n", addr)
 	return nil
 }
 

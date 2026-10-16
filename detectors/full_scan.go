@@ -41,11 +41,11 @@ func (fullScan) Detect(in Input) []Finding {
 	if in.ShareOfTime >= 0.25 || in.Stats.P95 >= 250*time.Millisecond {
 		sev = Critical
 	}
-	table := scan.Table()
+	table := qualifiedName(scan)
 	rows := fmtRows(scan.TableRows)
 
 	if col := leadingWildcardColumn(scan.Filter); col != "" {
-		idx := &IndexSuggestion{Table: table, Columns: []string{col + " gin_trgm_ops"}, Method: "gin", Extension: "pg_trgm"}
+		idx := &IndexSuggestion{Table: table, Columns: []string{quoteIdent(col) + " gin_trgm_ops"}, Method: "gin", Extension: "pg_trgm"}
 		return []Finding{{
 			Detector: "full-scan",
 			Severity: max(sev, Warning),
@@ -63,7 +63,7 @@ func (fullScan) Detect(in Input) []Finding {
 			continue
 		}
 		expr := fmt.Sprintf("%s(%s)", c.fn, c.column)
-		idx := &IndexSuggestion{Table: table, Columns: []string{"(" + expr + ")"}}
+		idx := &IndexSuggestion{Table: table, Columns: []string{"(" + c.fn + "(" + quoteIdent(c.column) + "))"}}
 		return []Finding{{
 			Detector: "full-scan",
 			Severity: max(sev, Warning),

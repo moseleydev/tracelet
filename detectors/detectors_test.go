@@ -157,3 +157,23 @@ func TestConditions(t *testing.T) {
 		}
 	}
 }
+
+func TestGeneratedSQLQuotesIdentifiers(t *testing.T) {
+	plan := &Plan{Node: "Sort", SortKey: []string{`o."Created At" DESC`}, Children: []*Plan{{
+		Node: "Seq Scan", Relation: "Order Items", Schema: "Sales", TableRows: 100000,
+		Filter: `((o."Customer ID" = $1) AND (o."user" = $2))`,
+	}}}
+	f := only(t, missingIndex{}, Input{Stats: stats(100, 0, ""), Plan: plan})
+	want := `CREATE INDEX CONCURRENTLY order_items_customer_id_user_created_at_idx ON "Sales"."Order Items" ("Customer ID", "user", "Created At" DESC);`
+	if f.Fix != want {
+		t.Fatalf("fix\n got  %s\n want %s", f.Fix, want)
+	}
+
+	for in, want := range map[string]string{
+		"email": "email", "Email": `"Email"`, "order": `"order"`, "user": `"user"`, `we"ird`: `"we""ird"`, "a b": `"a b"`,
+	} {
+		if got := quoteIdent(in); got != want {
+			t.Errorf("quoteIdent(%q) = %s, want %s", in, got, want)
+		}
+	}
+}

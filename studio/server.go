@@ -22,13 +22,16 @@ var distFS embed.FS
 
 // Info describes the running Tracelet instance to the UI.
 type Info struct {
-	Version       string    `json:"version"`
-	Upstream      string    `json:"upstream,omitempty"` // empty when only viewing saved data
-	Proxy         string    `json:"proxy,omitempty"`
-	Data          string    `json:"data"`
-	CaptureParams bool      `json:"capture_params"`
-	Analyze       bool      `json:"analyze"`
-	StartedAt     time.Time `json:"started_at"`
+	Version       string `json:"version"`
+	Upstream      string `json:"upstream,omitempty"` // empty when only viewing saved data
+	Proxy         string `json:"proxy,omitempty"`
+	Data          string `json:"data"`
+	CaptureParams bool   `json:"capture_params"`
+	// Public is set when Studio was deliberately served on a network
+	// address (--studio-public). It then accepts any Host header.
+	Public    bool      `json:"public"`
+	Analyze   bool      `json:"analyze"`
+	StartedAt time.Time `json:"started_at"`
 }
 
 // Server is the studio HTTP handler.
@@ -56,7 +59,9 @@ func New(st *store.Store, hub *Hub, info Info) *Server {
 	return s
 }
 
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.ServeHTTP(w, r) }
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	guard(s.mux, s.info.Public).ServeHTTP(w, r)
+}
 
 func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 	info := s.info

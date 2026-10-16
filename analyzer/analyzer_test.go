@@ -252,3 +252,36 @@ func TestPassProducesFindings(t *testing.T) {
 		}
 	}
 }
+
+// Generated fixes must be valid SQL even for awkward names: run one.
+func TestFixWithQuotedIdentifiersRuns(t *testing.T) {
+	url, db := setup(t)
+	ctx := context.Background()
+	_, err := db.Exec(ctx, `
+		DROP TABLE IF EXISTS "Weird Orders";
+		CREATE TABLE "Weird Orders" (id int PRIMARY KEY, "Customer ID" int, "user" int);
+		INSERT INTO "Weird Orders" SELECT g, g % 500, g % 7 FROM generate_series(1, 30000) g;
+		ANALYZE "Weird Orders";`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Exec(context.Background(), `DROP TABLE IF EXISTS "Weird Orders"`) })
+
+	x, err := Connect(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer x.Close(ctx)
+	plan, err := x.Explain(ctx, `SELECT id FROM "Weird Orders" WHERE "Customer ID" = $1 AND "user" = $2`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs := detectors.Run(detectors.Input{Plan: plan, Stats: core.Stats{Count: 100}})
+	if len(fs) == 0 || fs[0].Fix == "" {
+		t.Fatalf("expected a fix, got %+v", fs)
+	}
+	t.Log(fs[0].Fix)
+	if _, err := db.Exec(ctx, fs[0].Fix); err != nil {
+		t.Fatalf("generated fix is not valid SQL: %v\n%s", err, fs[0].Fix)
+	}
+}

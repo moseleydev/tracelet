@@ -24,18 +24,29 @@ import (
 
 func runUp(args []string) error {
 	fs := flag.NewFlagSet("up", flag.ExitOnError)
-	db := fs.String("db", "", "upstream database URL, e.g. postgres://user:pass@localhost:5432/app")
+	db := fs.String("db", "", "upstream database URL, e.g. postgres://user:pass@localhost:5432/app (or set TRACELET_DB_URL to keep the password out of the process list)")
 	listen := fs.String("listen", "127.0.0.1:6433", "address the proxy listens on; point your app here")
 	captureParams := fs.Bool("capture-params", false, "record bound parameter values (may contain personal data)")
 	quiet := fs.Bool("quiet", false, "do not print each query")
 	dataPath := fs.String("data", store.DefaultPath, "file where query stats are saved")
 	studioAddr := fs.String("studio", "127.0.0.1:4000", "address Tracelet Studio is served on; empty to disable")
+	studioPublic := fs.Bool("studio-public", false, "allow serving Studio on a non-local address (it has no login: anyone who can reach it sees your query data)")
 	openBrowser := fs.Bool("open", true, "open Tracelet Studio in your browser")
 	analyze := fs.Bool("analyze", true, "EXPLAIN the costliest queries (read-only, never executed) to find missing indexes and other problems")
 	fs.Parse(args)
 
 	if *db == "" {
-		return fmt.Errorf("up: --db is required")
+		*db = os.Getenv("TRACELET_DB_URL")
+	}
+	if *db == "" {
+		return fmt.Errorf("up: --db (or TRACELET_DB_URL) is required")
+	}
+	if err := checkStudioAddr(*studioAddr, *studioPublic); err != nil {
+		return fmt.Errorf("up: %w", err)
+	}
+	if !studio.IsLoopback(*listen) {
+		fmt.Fprintf(os.Stderr, "tracelet: warning: the proxy listens on %s, beyond this machine. "+
+			"Traffic between your app and Tracelet is not encrypted; keep it on a trusted network.\n", *listen)
 	}
 	u, err := url.Parse(*db)
 	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") {
@@ -86,6 +97,7 @@ func runUp(args []string) error {
 			Data:          *dataPath,
 			CaptureParams: *captureParams,
 			Analyze:       *analyze,
+			Public:        *studioPublic,
 			StartedAt:     time.Now(),
 		}), hub)
 		if err != nil {

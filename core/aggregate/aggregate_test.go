@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -383,5 +384,34 @@ func TestRunSurvivesInternalErrors(t *testing.T) {
 	})
 	if err != nil || seen != 2 || len(logged) != 1 || len(saver.rollups) != 2 {
 		t.Fatalf("err %v, seen %d, logged %q, rollups %d", err, seen, logged, len(saver.rollups))
+	}
+}
+
+func TestRedactValues(t *testing.T) {
+	for in, want := range map[string]string{
+		`invalid input syntax for type integer: "abc123" (SQLSTATE 22P02)`: `invalid input syntax for type integer: "?" (SQLSTATE 22P02)`,
+		`relation "users" does not exist (SQLSTATE 42P01)`:                 `relation "users" does not exist (SQLSTATE 42P01)`,
+		`invalid input value for enum mood: "secret"`:                      `invalid input value for enum mood: "?"`,
+		`syntax error at or near 'a@b.com'`:                                `syntax error at or near '?'`,
+		`column "email" of relation "users" does not exist`:                `column "email" of relation "users" does not exist`,
+		`unterminated: "x`: `unterminated: "?`,
+	} {
+		if got := redactValues(in); got != want {
+			t.Errorf("redactValues(%q)\n got  %q\n want %q", in, got, want)
+		}
+	}
+}
+
+func TestStoredErrorsAreRedactedUnlessCapturing(t *testing.T) {
+	for _, capture := range []bool{false, true} {
+		saver := &fakeSaver{}
+		a := New(saver, capture, nil)
+		a.Add(core.Event{Query: "SELECT * FROM t WHERE id = $1", StartedAt: t0, Error: `invalid input syntax for type integer: "4111-1111" (SQLSTATE 22P02)`})
+		a.Flush(true)
+		for _, r := range saver.rollups {
+			if leaked := strings.Contains(r.LastError, "4111"); leaked != capture {
+				t.Fatalf("capture=%v: last error %q", capture, r.LastError)
+			}
+		}
 	}
 }
