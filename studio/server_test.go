@@ -244,3 +244,46 @@ func TestFindingsAndPlanAPI(t *testing.T) {
 		t.Fatalf("unknown plan: %s, want 404", resp.Status)
 	}
 }
+
+func TestRoutesAndTracesAPI(t *testing.T) {
+	st := testStore(t)
+	now := time.Now()
+	hash := "abc" // saved by testStore
+	err := st.SaveTraces([]core.Trace{{
+		ID: "t1", Route: "GET /users/:id", Start: now, Duration: 3 * time.Millisecond, Queries: 2, DBTime: 3 * time.Millisecond,
+		Spans: []core.Span{{Hash: hash, Duration: time.Millisecond}, {Hash: hash, Offset: time.Millisecond, Duration: 2 * time.Millisecond}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(New(st, nil, Info{}))
+	defer srv.Close()
+
+	var routes []store.RouteStats
+	getJSON(t, srv, "/api/routes?since=15m", &routes)
+	if len(routes) != 1 || routes[0].Route != "GET /users/:id" || routes[0].Requests != 1 {
+		t.Fatalf("routes = %+v", routes)
+	}
+	var traces []core.Trace
+	getJSON(t, srv, "/api/traces?route=GET+%2Fusers%2F%3Aid&order=slowest", &traces)
+	if len(traces) != 1 || traces[0].ID != "t1" || traces[0].Spans != nil {
+		t.Fatalf("traces = %+v", traces)
+	}
+	getJSON(t, srv, "/api/traces?route=", &traces)
+	if len(traces) != 0 {
+		t.Fatalf("no-route traces = %+v", traces)
+	}
+	var detail TraceDetail
+	getJSON(t, srv, "/api/trace?id=t1", &detail)
+	if detail.Trace == nil || len(detail.Trace.Spans) != 2 || detail.Queries[hash].Query != "SELECT * FROM users WHERE id = ?" {
+		t.Fatalf("trace detail = %+v", detail)
+	}
+	resp, err := http.Get(srv.URL + "/api/trace?id=nope")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown trace: %s", resp.Status)
+	}
+}

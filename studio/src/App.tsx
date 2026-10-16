@@ -2,18 +2,19 @@ import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { fmtCount, fmtMs, nsToMs, windows } from './api'
 import type { Finding, WindowId } from './api'
-import { useFindings, useInfo, useLive, useStats } from './hooks'
+import { useFindings, useInfo, useLive, useRoutes, useStats } from './hooks'
+import { Requests } from './Requests'
 import { Insights } from './Insights'
 import { QueryDetail } from './QueryDetail'
 import { QueryTable, SpeedChip } from './QueryTable'
 import { Topology } from './Topology'
 
-type View = 'topology' | 'queries' | 'insights'
+type View = 'topology' | 'queries' | 'requests' | 'insights'
 
 function readHash(): { view: View; query: string | null } {
   const p = new URLSearchParams(window.location.hash.slice(1))
   const v = p.get('view')
-  return { view: v === 'queries' || v === 'insights' ? v : 'topology', query: p.get('q') }
+  return { view: v === 'queries' || v === 'requests' || v === 'insights' ? v : 'topology', query: p.get('q') }
 }
 
 export default function App() {
@@ -32,6 +33,7 @@ export default function App() {
   const live = useLive()
   const { top, tables, error } = useStats(win)
   const findings = useFindings(win)
+  const routes = useRoutes(win)
 
   // Findings per query, most severe first (the API already orders them).
   const issues = useMemo(() => {
@@ -139,6 +141,9 @@ export default function App() {
             <button role="tab" className="tab" aria-selected={view === 'queries'} onClick={() => setView('queries')}>
               Queries
             </button>
+            <button role="tab" className="tab" aria-selected={view === 'requests'} onClick={() => setView('requests')}>
+              Requests
+            </button>
             <button role="tab" className="tab" aria-selected={view === 'insights'} onClick={() => setView('insights')}>
               Insights
               {!!findings.data?.length && (
@@ -151,11 +156,14 @@ export default function App() {
           {!isLive && (
             <div className="banner">Viewing saved data. Run “tracelet up” to watch queries live.</div>
           )}
-          {view === 'insights' ? (
+          {view === 'requests' ? (
+            <Requests routes={routes.data} win={win} onSelectQuery={setSelected} />
+          ) : view === 'insights' ? (
             <Insights findings={findings.data} analyze={info.data?.analyze ?? true} live={isLive} onSelect={setSelected} />
           ) : view === 'topology' ? (
             <Topology
               issues={issues}
+              routes={routes.data ?? []}
               stats={top ?? []}
               tables={tables ?? []}
               subscribe={live.subscribe}

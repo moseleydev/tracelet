@@ -1,0 +1,45 @@
+{
+  "description": "Shared sqlcommenter test cases. The Go parser and every SDK test against these so they stay compatible. Keys are sorted, keys and values are URL-encoded (encodeURIComponent rules), single quotes in values are escaped as \\', and the comment goes before a trailing semicolon.",
+  "cases": [
+    {
+      "name": "route and traceparent",
+      "sql": "SELECT * FROM users WHERE id = $1",
+      "fields": { "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", "route": "GET /users/:id" },
+      "commented": "SELECT * FROM users WHERE id = $1 /*route='GET%20%2Fusers%2F%3Aid',traceparent='00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'*/",
+      "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+      "route": "GET /users/:id"
+    },
+    {
+      "name": "trailing semicolon",
+      "sql": "SELECT 1;",
+      "fields": { "route": "/health" },
+      "commented": "SELECT 1 /*route='%2Fhealth'*/;",
+      "trace_id": "",
+      "route": "/health"
+    },
+    {
+      "name": "quote and unicode in a value",
+      "sql": "SELECT name FROM people",
+      "fields": { "route": "GET /people/O'Brien/é" },
+      "commented": "SELECT name FROM people /*route='GET%20%2Fpeople%2FO\\'Brien%2F%C3%A9'*/",
+      "trace_id": "",
+      "route": "GET /people/O'Brien/é"
+    },
+    {
+      "name": "controller and action when there is no route",
+      "sql": "SELECT * FROM orders",
+      "fields": { "controller": "orders", "action": "index", "framework": "rails" },
+      "commented": "SELECT * FROM orders /*action='index',controller='orders',framework='rails'*/",
+      "trace_id": "",
+      "route": "orders#index"
+    },
+    {
+      "name": "existing comment is left alone",
+      "sql": "SELECT 1 /* app comment */",
+      "fields": { "route": "/x" },
+      "commented": "SELECT 1 /* app comment */",
+      "trace_id": "",
+      "route": ""
+    }
+  ]
+}

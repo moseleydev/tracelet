@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/moseleydev/tracelet/analyzer"
+	"github.com/moseleydev/tracelet/core"
 	"github.com/moseleydev/tracelet/core/store"
 )
 
@@ -48,6 +49,9 @@ func New(st *store.Store, hub *Hub, info Info) *Server {
 	s.mux.HandleFunc("GET /api/live", s.handleLive)
 	s.mux.HandleFunc("GET /api/findings", s.handleFindings)
 	s.mux.HandleFunc("GET /api/plan", s.handlePlan)
+	s.mux.HandleFunc("GET /api/routes", s.handleRoutes)
+	s.mux.HandleFunc("GET /api/traces", s.handleTraces)
+	s.mux.HandleFunc("GET /api/trace", s.handleTrace)
 	s.mux.Handle("/", uiHandler())
 	return s
 }
@@ -201,6 +205,68 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, rec)
+}
+
+func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
+	since, err := parseSince(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	routes, err := s.store.Routes(since)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, nonNil(routes))
+}
+
+// handleTraces lists requests: ?route= (present but empty selects requests
+// without a route), ?order=recent|slowest|queries, ?limit=.
+func (s *Server) handleTraces(w http.ResponseWriter, r *http.Request) {
+	since, err := parseSince(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	traces, err := s.store.Traces(store.TraceQuery{
+		Since: since, Route: q.Get("route"), RouteSet: q.Has("route"), Order: q.Get("order"), Limit: limit,
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, nonNil(traces))
+}
+
+// TraceDetail is one request with the text of every query in it.
+type TraceDetail struct {
+	Trace   *core.Trace                 `json:"trace"`
+	Queries map[string]core.Fingerprint `json:"queries"` // by hash
+}
+
+func (s *Server) handleTrace(w http.ResponseWriter, r *http.Request) {
+	t, err := s.store.Trace(r.URL.Query().Get("id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if t == nil {
+		http.Error(w, "unknown trace", http.StatusNotFound)
+		return
+	}
+	fps, err := s.store.Fingerprints()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	detail := TraceDetail{Trace: t, Queries: map[string]core.Fingerprint{}}
+	for _, sp := range t.Spans {
+		detail.Queries[sp.Hash] = fps[sp.Hash]
+	}
+	writeJSON(w, detail)
 }
 
 // parseSince reads ?since=15m (a duration back from now) or ?since=0 for

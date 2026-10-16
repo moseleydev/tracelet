@@ -1,0 +1,32 @@
+{
+  "name": "tracelet-sdk",
+  "version": "0.1.0",
+  "description": "Tag your database queries with the request that ran them, so Tracelet can show per-request waterfalls and catch N+1 loops.",
+  "license": "Apache-2.0",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=16.4"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "tracelet",
+    "sqlcommenter",
+    "postgres",
+    "database",
+    "performance",
+    "n+1"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/moseleydev/tracelet.git",
+    "directory": "sdks/node"
+  }
+}

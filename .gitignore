@@ -18,3 +18,7 @@ studio/dist/*
 .idea/
 .vscode/
 .tracelet/
+
+# Python
+__pycache__/
+*.egg-info/

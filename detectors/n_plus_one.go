@@ -45,11 +45,14 @@ func (nPlusOne) Detect(in Input) []Finding {
 		after = "`" + q + "`"
 	}
 
+	if b.Route != "" {
+		after += " in `" + b.Route + "` requests"
+	}
 	f := Finding{
 		Detector: "n-plus-one",
 		Severity: sev,
 		Title:    fmt.Sprintf("N+1 queries: runs ~%d times in a row", avg),
-		Explanation: fmt.Sprintf("This query ran %d times back to back on the same connection, right after %s, in %d separate loops (up to %d in one). "+
+		Explanation: fmt.Sprintf("This query ran %d times back to back, right after %s, in %d separate loops (up to %d in one). "+
 			"That's an N+1 pattern: the app loads a list, then queries once per item. Every call is a round trip, so a page of 50 items costs 51 queries where 1 or 2 would do.",
 			avg, after, b.Runs, b.MaxRun),
 	}
