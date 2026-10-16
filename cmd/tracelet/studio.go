@@ -40,7 +40,7 @@ func runStudio(args []string) error {
 	}
 	defer st.Close()
 
-	ui, err := startStudio(*addr, studio.New(st, nil, studio.Info{
+	ui, err := startStudio(*addr, studio.New(st, nil, nil, studio.Info{
 		Version:   version,
 		Data:      *dataPath,
 		StartedAt: time.Now(),

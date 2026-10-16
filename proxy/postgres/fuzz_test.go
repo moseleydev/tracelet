@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"sync/atomic"
 	"testing"
 
 	"github.com/moseleydev/tracelet/proxy"
@@ -15,7 +16,9 @@ func FuzzTracker(f *testing.F) {
 	f.Add([]byte("BCSELECT 5\x00BESERROR\x00C42P01\x00Mnope\x00\x00BZI"))
 	f.Add([]byte("FC\x00BI\x00Bs\x00B1B2FB\xff\xff"))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		srv := &Server{cfg: Config{Sink: proxy.NewSink(64), Logf: func(string, ...any) {}, CaptureParams: true}}
+		recording := &atomic.Bool{}
+		recording.Store(true) // exercise the replay capture too
+		srv := &Server{cfg: Config{Sink: proxy.NewSink(64), Logf: func(string, ...any) {}, CaptureParams: true, Recording: recording}}
 		tr := newTracker(srv, 1)
 		// Each message: direction byte (F/B), type byte, then a body that
 		// runs to the next direction marker or a length taken from data.
@@ -29,9 +32,9 @@ func FuzzTracker(f *testing.F) {
 			body := data[:n]
 			data = data[n:]
 			if dir == 'F' {
-				tr.frontend(typ, body)
+				tr.frontend(typ, body, true)
 			} else {
-				tr.backend(typ, body)
+				tr.backend(typ, body, true)
 			}
 		}
 	})

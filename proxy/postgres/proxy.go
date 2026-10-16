@@ -36,6 +36,9 @@ type Config struct {
 	CaptureParams bool
 	// Sink receives the captured events. Required.
 	Sink *proxy.Sink
+	// Recording, when set and true, makes the proxy capture each query's
+	// replay detail (Event.Replay). While false the proxy does no extra work.
+	Recording *atomic.Bool
 	// Logf reports connection-level problems. Optional.
 	Logf func(format string, args ...any)
 }
@@ -170,7 +173,7 @@ func (s *Server) handle(client net.Conn) {
 
 	t := newTracker(s, id)
 	errc := make(chan error, 2)
-	relay := func(src, dst net.Conn, inspected *[256]bool, inspect func(byte, []byte)) {
+	relay := func(src, dst net.Conn, inspected *[256]bool, inspect func(byte, []byte, bool)) {
 		// A bug in Tracelet must never take down other connections: if
 		// relaying itself fails unexpectedly, only this connection closes.
 		defer func() {
@@ -313,7 +316,7 @@ func typeSet(types ...byte) *[256]bool {
 // pump copies typed protocol messages from src to dst, passing the bodies of
 // inspected message types to inspect. Output is flushed whenever src has
 // nothing more buffered, so batching never adds latency.
-func pump(src, dst net.Conn, inspected *[256]bool, inspect func(typ byte, body []byte)) error {
+func pump(src, dst net.Conn, inspected *[256]bool, inspect func(typ byte, body []byte, whole bool)) error {
 	r := bufio.NewReaderSize(src, bufSize)
 	w := bufio.NewWriterSize(dst, bufSize)
 	var hdr [5]byte
@@ -339,7 +342,7 @@ func pump(src, dst net.Conn, inspected *[256]bool, inspect func(typ byte, body [
 			if _, err := io.ReadFull(r, body); err != nil {
 				return err
 			}
-			inspect(typ, body)
+			inspect(typ, body, n == keep)
 			if _, err := w.Write(body); err != nil {
 				return err
 			}

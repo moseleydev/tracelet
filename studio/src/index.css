@@ -1665,3 +1665,101 @@ code,
     grid-template-columns: minmax(100px, 38%) minmax(0, 1fr);
   }
 }
+
+/* ---------- recording ---------- */
+
+.recording {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rec-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.rec-btn:hover {
+  border-color: var(--baseline);
+}
+
+.rec-btn .rec-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--critical);
+}
+
+.rec-btn.on {
+  border-color: color-mix(in srgb, var(--critical) 55%, transparent);
+  color: var(--critical-text);
+}
+
+.rec-btn.on .rec-dot {
+  border-radius: 2px;
+  animation: blink 1.2s infinite;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rec-btn.on .rec-dot {
+    animation: none;
+  }
+}
+
+.sessions-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 20;
+  width: min(520px, 90vw);
+  max-height: 70vh;
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 12px 14px;
+}
+
+.sessions-pop header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sessions-pop p {
+  font-size: 12.5px;
+  margin: 8px 0;
+}
+
+.sessions-pop ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sess-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+}

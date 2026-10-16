@@ -9,6 +9,7 @@ import (
 	"net"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -118,8 +119,14 @@ func (f *fakePostgres) serve(c net.Conn) {
 
 func startProxy(t *testing.T, upstream string, captureParams bool) (string, *proxy.Sink) {
 	t.Helper()
+	return startProxyWith(t, Config{Upstream: upstream, CaptureParams: captureParams})
+}
+
+func startProxyWith(t *testing.T, cfg Config) (string, *proxy.Sink) {
+	t.Helper()
 	sink := proxy.NewSink(100)
-	srv, err := New(Config{Upstream: upstream, SSLMode: "disable", CaptureParams: captureParams, Sink: sink})
+	cfg.SSLMode, cfg.Sink = "disable", sink
+	srv, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -477,11 +484,56 @@ func TestInspectionPanicLeavesTrafficUntouched(t *testing.T) {
 	srv := &Server{cfg: Config{Logf: func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }}}
 	tr := newTracker(srv, 7)
 	calls := 0
-	g := tr.guard(func(byte, []byte) { calls++; panic("parser bug") })
+	g := tr.guard(func(byte, []byte, bool) { calls++; panic("parser bug") })
 
-	g('Q', nil) // must not propagate
-	g('Q', nil) // tracking is now off for this connection
+	g('Q', nil, true) // must not propagate
+	g('Q', nil, true) // tracking is now off for this connection
 	if calls != 1 || !tr.broken.Load() || len(logged) != 1 || !strings.Contains(logged[0], "traffic is unaffected") {
 		t.Fatalf("calls %d, broken %v, logged %q", calls, tr.broken.Load(), logged)
+	}
+}
+
+func TestRecordingCapturesExactWireData(t *testing.T) {
+	pg := startFakePostgres(t)
+	recording := &atomic.Bool{}
+	addr, sink := startProxyWith(t, Config{Upstream: pg.addr, Recording: recording})
+	fe := connect(t, addr)
+
+	run := func() core.Event {
+		fe.Send(&pgproto3.Parse{Name: "s", Query: "UPDATE t SET v = $2 WHERE id = $1", ParameterOIDs: []uint32{23, 25}})
+		fe.Send(&pgproto3.Bind{PreparedStatement: "s", ParameterFormatCodes: []int16{1, 0},
+			Parameters: [][]byte{{0, 0, 0, 42}, nil}, ResultFormatCodes: []int16{1}})
+		fe.Send(&pgproto3.Execute{})
+		fe.Send(&pgproto3.Sync{})
+		flush(t, fe)
+		waitReady(t, fe)
+		return nextEvent(t, sink)
+	}
+
+	if e := run(); e.Replay != nil {
+		t.Fatalf("not recording, but replay detail was captured: %+v", e.Replay)
+	}
+
+	recording.Store(true)
+	e := run()
+	want := &core.Replay{Query: "UPDATE t SET v = $2 WHERE id = $1", ParamOIDs: []uint32{23, 25}, ParamFormats: []int16{1, 0},
+		Params: [][]byte{{0, 0, 0, 42}, nil}, ResultFormats: []int16{1}}
+	if !reflect.DeepEqual(e.Replay, want) {
+		t.Fatalf("replay = %+v, want %+v", e.Replay, want)
+	}
+
+	fe.Send(&pgproto3.Query{String: "SELECT 1; SELECT 2"})
+	flush(t, fe)
+	waitReady(t, fe)
+	if e := nextEvent(t, sink); e.Replay == nil || !e.Replay.Simple || e.Replay.Query != "SELECT 1; SELECT 2" {
+		t.Fatalf("simple query replay = %+v", e.Replay)
+	}
+
+	// Too long to hold in full: recorded as not replayable rather than wrong.
+	fe.Send(&pgproto3.Query{String: "SELECT '" + strings.Repeat("x", maxInspect) + "'"})
+	flush(t, fe)
+	waitReady(t, fe)
+	if e := nextEvent(t, sink); e.Replay != nil {
+		t.Fatal("a truncated message must not be recorded for replay")
 	}
 }

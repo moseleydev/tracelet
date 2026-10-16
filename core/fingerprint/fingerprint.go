@@ -592,3 +592,18 @@ var typedLiterals = map[string]bool{
 	"interval": true, "date": true, "time": true, "timestamp": true, "timestamptz": true,
 	"uuid": true, "json": true, "jsonb": true, "inet": true, "cidr": true,
 }
+
+// MultiStatement reports whether q holds more than one statement, ignoring
+// semicolons inside strings, quoted names and comments, and a trailing one.
+func MultiStatement(q string) bool {
+	toks := tokenize(q)
+	for len(toks) > 0 && toks[len(toks)-1].text == ";" {
+		toks = toks[:len(toks)-1]
+	}
+	for _, t := range toks {
+		if t.text == ";" {
+			return true
+		}
+	}
+	return false
+}

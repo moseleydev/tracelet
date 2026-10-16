@@ -137,6 +137,21 @@ export interface TraceDetail {
 
 export type TraceOrder = 'slowest' | 'recent' | 'queries'
 
+export interface SessionStats {
+  path: string
+  started: string
+  entries: number
+  dropped: number
+  bytes: number
+  full: boolean
+}
+
+export interface RecordState {
+  available: boolean
+  status: { recording: boolean; current?: SessionStats; last?: SessionStats }
+  sessions: { name: string; path: string; size: number; modified: string }[]
+}
+
 export interface Info {
   version: string
   upstream?: string
@@ -181,6 +196,16 @@ export const api = {
   traces: (route: string, order: TraceOrder, since: string) =>
     get<Trace[]>(`/api/traces?route=${encodeURIComponent(route)}&order=${order}&since=${since}&limit=50`),
   trace: (id: string) => get<TraceDetail>(`/api/trace?id=${encodeURIComponent(id)}`),
+  record: () => get<RecordState>('/api/record'),
+  setRecording: async (action: 'start' | 'stop'): Promise<RecordState> => {
+    const res = await fetch('/api/record', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action }),
+    })
+    if (!res.ok) throw new Error(await res.text())
+    return res.json() as Promise<RecordState>
+  },
   plan: async (hash: string): Promise<PlanRecord | null> => {
     const res = await fetch(`/api/plan?hash=${encodeURIComponent(hash)}`)
     if (res.status === 404) return null

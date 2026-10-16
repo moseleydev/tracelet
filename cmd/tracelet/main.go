@@ -22,8 +22,7 @@ Commands:
   up        Start the capture proxy and Tracelet Studio
   top       Show the queries that cost the most time
   studio    Open Tracelet Studio on saved data, without the proxy
-  record    Record traffic to a .session file
-  replay    Replay a .session file against a target database
+  replay    Replay a recorded session against a database (record with "up --record" or from Studio)
   version   Print the Tracelet version
 
 Run "tracelet <command> -h" for command flags.
@@ -62,8 +61,8 @@ func main() {
 		err = runTop(args)
 	case "studio":
 		err = runStudio(args)
-	case "record", "replay":
-		err = fmt.Errorf("%q is not implemented yet, see docs/ROADMAP.md", cmd)
+	case "replay":
+		err = runReplay(args)
 	case "version", "-v", "--version":
 		fmt.Println("tracelet", version)
 	case "help", "-h", "--help":

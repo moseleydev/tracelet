@@ -72,12 +72,16 @@ The UI is embedded in the Go binary and has no chart or animation dependencies: 
 - [ ] Publish the SDKs to npm and PyPI
 - [ ] More integrations (Prisma, Knex, psycopg without an ORM, Rails via existing sqlcommenter gems)
 
-## Phase 6: Record, replay, simulate
+## Phase 6: Record, replay, simulate ✅
 
-- [ ] `tracelet record` writes a `.session` file
-- [ ] Session player with a scrubbable timeline
-- [ ] `tracelet replay` against staging only: writes rolled back, production hosts refused
-- [ ] Load simulation (×10, ×100) with before/after comparison
+- [x] Record from Studio or `tracelet up --record`: wire-exact sessions (`.trc.gz`), zero cost when not recording, size-capped, owner-only files
+- [x] `tracelet replay`:
+  - read mode on read-only connections;
+  - rollback mode where every write is rolled back;
+  - refuses to write to the recorded database
+- [x] Load simulation (`--scale`, `--speed`) with per-query comparison against the recording
+- [x] Before/after comparison (`--save`, `--compare`)
+- [ ] Session player with a scrubbable timeline in Studio
 
 ## Phase 7: More databases
 

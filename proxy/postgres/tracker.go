@@ -23,7 +23,7 @@ type tracker struct {
 	connID uint64
 
 	// Owned by the frontend goroutine.
-	stmts   map[string]string // prepared statement name -> query
+	stmts   map[string]stmt // prepared statement name -> query
 	portals map[string]portal
 
 	mu      sync.Mutex
@@ -37,8 +37,8 @@ type tracker struct {
 // guard wraps an inspect function so that a panic (a Tracelet bug on some
 // unusual message) disables tracking for this connection instead of
 // affecting the application's traffic.
-func (t *tracker) guard(inspect func(typ byte, body []byte)) func(byte, []byte) {
-	return func(typ byte, body []byte) {
+func (t *tracker) guard(inspect func(typ byte, body []byte, whole bool)) func(byte, []byte, bool) {
+	return func(typ byte, body []byte, whole bool) {
 		if t.broken.Load() {
 			return
 		}
@@ -47,13 +47,19 @@ func (t *tracker) guard(inspect func(typ byte, body []byte)) func(byte, []byte) 
 				t.s.cfg.Logf("conn %d: stopped tracking queries after an internal error (traffic is unaffected): %v", t.connID, r)
 			}
 		}()
-		inspect(typ, body)
+		inspect(typ, body, whole)
 	}
+}
+
+type stmt struct {
+	query string
+	oids  []uint32 // parameter types, captured only while recording
 }
 
 type portal struct {
 	query  string
 	params []string
+	replay *core.Replay
 }
 
 type opKind uint8
@@ -70,6 +76,7 @@ type op struct {
 	kind   opKind
 	query  string
 	params []string
+	replay *core.Replay
 	start  time.Time
 	rows   int64
 	err    string
@@ -79,22 +86,38 @@ func newTracker(s *Server, connID uint64) *tracker {
 	return &tracker{
 		s:       s,
 		connID:  connID,
-		stmts:   map[string]string{},
+		stmts:   map[string]stmt{},
 		portals: map[string]portal{},
 	}
 }
 
 // frontend inspects a message sent by the application.
-func (t *tracker) frontend(typ byte, body []byte) {
+// recording reports whether replay detail should be captured right now.
+func (t *tracker) recording() bool {
+	r := t.s.cfg.Recording
+	return r != nil && r.Load()
+}
+
+// frontend inspects a message sent by the application. whole is false when
+// the message was longer than Tracelet reads, so body is only its start.
+func (t *tracker) frontend(typ byte, body []byte, whole bool) {
 	switch typ {
 	case 'Q': // Query
 		q, _ := cstring(body)
-		t.push(&op{kind: opSimple, query: q, start: time.Now()})
+		o := &op{kind: opSimple, query: q, start: time.Now()}
+		if whole && t.recording() {
+			o.replay = &core.Replay{Simple: true, Query: q}
+		}
+		t.push(o)
 
 	case 'P': // Parse
 		name, rest := cstring(body)
-		q, _ := cstring(rest)
-		t.stmts[name] = q
+		q, rest := cstring(rest)
+		st := stmt{query: q}
+		if whole && t.recording() {
+			st.oids = parseOIDs(rest)
+		}
+		t.stmts[name] = st
 		// Tracked so that a failed prepare (e.g. a missing table) is still
 		// reported, even though no Execute follows it.
 		t.push(&op{kind: opParse, query: q, start: time.Now()})
@@ -106,13 +129,18 @@ func (t *tracker) frontend(typ byte, body []byte) {
 		if t.s.cfg.CaptureParams {
 			params = bindParams(rest)
 		}
-		t.portals[name] = portal{query: t.stmts[stmt], params: params}
-		t.push(&op{kind: opBind, query: t.stmts[stmt], params: params, start: time.Now()})
+		st := t.stmts[stmt]
+		p := portal{query: st.query, params: params}
+		if whole && t.recording() {
+			p.replay = parseBind(st, rest)
+		}
+		t.portals[name] = p
+		t.push(&op{kind: opBind, query: st.query, params: params, start: time.Now()})
 
 	case 'E': // Execute
 		name, _ := cstring(body)
 		p := t.portals[name]
-		t.push(&op{kind: opExecute, query: p.query, params: p.params, start: time.Now()})
+		t.push(&op{kind: opExecute, query: p.query, params: p.params, replay: p.replay, start: time.Now()})
 
 	case 'S': // Sync
 		t.push(&op{kind: opSync})
@@ -131,7 +159,7 @@ func (t *tracker) frontend(typ byte, body []byte) {
 }
 
 // backend inspects a message sent by the database.
-func (t *tracker) backend(typ byte, body []byte) {
+func (t *tracker) backend(typ byte, body []byte, _ bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -225,6 +253,7 @@ func (t *tracker) complete() {
 		Engine:    core.Postgres,
 		Query:     o.query,
 		Params:    o.params,
+		Replay:    o.replay,
 		StartedAt: o.start,
 		Duration:  time.Since(o.start),
 		Rows:      o.rows,
@@ -333,4 +362,73 @@ func bindParams(b []byte) []string {
 		b = b[n:]
 	}
 	return params
+}
+
+// parseOIDs reads the parameter type list that ends a Parse message.
+func parseOIDs(b []byte) []uint32 {
+	if len(b) < 2 {
+		return nil
+	}
+	n := int(binary.BigEndian.Uint16(b))
+	b = b[2:]
+	if n == 0 || len(b) < 4*n {
+		return nil
+	}
+	oids := make([]uint32, n)
+	for i := range oids {
+		oids[i] = binary.BigEndian.Uint32(b[4*i:])
+	}
+	return oids
+}
+
+// parseBind copies everything a Bind message carries after its names, so the
+// execution can be replayed exactly. It returns nil if the message is
+// malformed.
+func parseBind(st stmt, b []byte) *core.Replay {
+	r := &core.Replay{Query: st.query, ParamOIDs: st.oids}
+	readInt16s := func() ([]int16, bool) {
+		if len(b) < 2 {
+			return nil, false
+		}
+		n := int(binary.BigEndian.Uint16(b))
+		b = b[2:]
+		if len(b) < 2*n {
+			return nil, false
+		}
+		var out []int16
+		for i := 0; i < n; i++ {
+			out = append(out, int16(binary.BigEndian.Uint16(b[2*i:])))
+		}
+		b = b[2*n:]
+		return out, true
+	}
+	var ok bool
+	if r.ParamFormats, ok = readInt16s(); !ok {
+		return nil
+	}
+	if len(b) < 2 {
+		return nil
+	}
+	n := int(binary.BigEndian.Uint16(b))
+	b = b[2:]
+	r.Params = make([][]byte, n)
+	for i := 0; i < n; i++ {
+		if len(b) < 4 {
+			return nil
+		}
+		size := int32(binary.BigEndian.Uint32(b))
+		b = b[4:]
+		if size < 0 {
+			continue // NULL
+		}
+		if int(size) > len(b) {
+			return nil
+		}
+		r.Params[i] = append([]byte{}, b[:size]...) // copy: the buffer is reused
+		b = b[size:]
+	}
+	if r.ResultFormats, ok = readInt16s(); !ok {
+		return nil
+	}
+	return r
 }
