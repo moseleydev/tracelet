@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/moseleydev/tracelet/core"
@@ -27,6 +28,27 @@ type tracker struct {
 
 	mu      sync.Mutex
 	pending []*op
+
+	// broken is set if inspecting this connection ever panics. Tracking
+	// stops, but the connection keeps relaying normally.
+	broken atomic.Bool
+}
+
+// guard wraps an inspect function so that a panic (a Tracelet bug on some
+// unusual message) disables tracking for this connection instead of
+// affecting the application's traffic.
+func (t *tracker) guard(inspect func(typ byte, body []byte)) func(byte, []byte) {
+	return func(typ byte, body []byte) {
+		if t.broken.Load() {
+			return
+		}
+		defer func() {
+			if r := recover(); r != nil && t.broken.CompareAndSwap(false, true) {
+				t.s.cfg.Logf("conn %d: stopped tracking queries after an internal error (traffic is unaffected): %v", t.connID, r)
+			}
+		}()
+		inspect(typ, body)
+	}
 }
 
 type portal struct {

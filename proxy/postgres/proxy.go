@@ -51,6 +51,10 @@ type Server struct {
 const (
 	maxStartupLen = 10_000
 	maxMessageLen = 1 << 30 // PostgreSQL's own limit on a single message
+	// maxInspect bounds how much of one message is held in memory to read
+	// it. Longer messages (bulk INSERTs, large parameters) are inspected
+	// from their first maxInspect bytes and the rest is streamed through.
+	maxInspect = 1 << 20
 
 	sslRequestCode    = 80877103
 	gssEncRequestCode = 80877104
@@ -166,8 +170,18 @@ func (s *Server) handle(client net.Conn) {
 
 	t := newTracker(s, id)
 	errc := make(chan error, 2)
-	go func() { errc <- pump(client, upstream, frontendInspected, t.frontend) }()
-	go func() { errc <- pump(upstream, client, backendInspected, t.backend) }()
+	relay := func(src, dst net.Conn, inspected *[256]bool, inspect func(byte, []byte)) {
+		// A bug in Tracelet must never take down other connections: if
+		// relaying itself fails unexpectedly, only this connection closes.
+		defer func() {
+			if r := recover(); r != nil {
+				errc <- fmt.Errorf("internal error, connection closed: %v", r)
+			}
+		}()
+		errc <- pump(src, dst, inspected, t.guard(inspect))
+	}
+	go relay(client, upstream, frontendInspected, t.frontend)
+	go relay(upstream, client, backendInspected, t.backend)
 	err = <-errc
 	client.Close()
 	upstream.Close()
@@ -317,16 +331,22 @@ func pump(src, dst net.Conn, inspected *[256]bool, inspect func(typ byte, body [
 			return err
 		}
 		if inspected[typ] {
-			if int64(cap(buf)) < n {
-				buf = make([]byte, n)
+			keep := min(n, maxInspect)
+			if int64(cap(buf)) < keep {
+				buf = make([]byte, keep)
 			}
-			body := buf[:n]
+			body := buf[:keep]
 			if _, err := io.ReadFull(r, body); err != nil {
 				return err
 			}
 			inspect(typ, body)
 			if _, err := w.Write(body); err != nil {
 				return err
+			}
+			if n > keep {
+				if _, err := io.CopyN(w, r, n-keep); err != nil {
+					return err
+				}
 			}
 		} else if _, err := io.CopyN(w, r, n); err != nil {
 			return err

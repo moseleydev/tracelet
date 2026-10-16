@@ -12,7 +12,9 @@ jobs:
       postgres:
         image: postgres:16.4
         env:
-          POSTGRES_PASSWORD: postgres
+          # A throwaway database that exists only inside this job, so no
+          # password: nothing for secret scanners to mistake for a credential.
+          POSTGRES_HOST_AUTH_METHOD: trust
         ports:
           - 5432:5432
         options: >-
@@ -21,7 +23,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      TRACELET_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+      TRACELET_TEST_POSTGRES_URL: postgres://postgres@localhost:5432/postgres?sslmode=disable
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

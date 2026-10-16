@@ -2,6 +2,7 @@ package analyzer
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"time"
 
@@ -63,12 +64,24 @@ func (a *Analyzer) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-timer.C:
-			if err := a.Pass(ctx); err != nil && ctx.Err() == nil {
+			if err := a.safePass(ctx); err != nil && ctx.Err() == nil {
 				a.report(err)
 			}
 			timer.Reset(a.Interval)
 		}
 	}
+}
+
+// safePass runs Pass, turning a panic into an error so a bug in analysis
+// can never stop the proxy.
+func (a *Analyzer) safePass(ctx context.Context) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("internal error, skipped this pass: %v", r)
+			a.explainer = nil // the connection may be mid-transaction; start fresh
+		}
+	}()
+	return a.Pass(ctx)
 }
 
 // report logs an error once, not on every pass.

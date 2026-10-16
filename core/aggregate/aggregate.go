@@ -41,6 +41,8 @@ type Aggregator struct {
 
 	traces map[string]*openTrace // requests still receiving queries
 	closed []core.Trace          // finished requests waiting to be saved
+
+	panics int // internal errors recovered by safeAdd
 }
 
 // openTrace collects the queries of one request until it goes quiet.
@@ -354,23 +356,53 @@ func (a *Aggregator) evict(all bool) {
 
 // Run consumes events until the channel closes, flushing every interval and
 // once more at the end. onEvent, if set, sees each event and its fingerprint.
-func (a *Aggregator) Run(events <-chan core.Event, interval time.Duration, onEvent func(core.Event, core.Fingerprint)) error {
-	tick := time.NewTicker(interval)
-	defer tick.Stop()
+// safeAdd records one event. A bug triggered by an unusual query skips that
+// event instead of crashing Tracelet, which would cut every application
+// connection going through the proxy.
+func (a *Aggregator) safeAdd(e *core.Event, onEvent func(core.Event, core.Fingerprint)) {
+	defer func() {
+		if r := recover(); r != nil {
+			a.panics++
+			if a.panics <= 3 {
+				a.logf("skipped a query after an internal error (traffic is unaffected): %v", r)
+			}
+		}
+	}()
+	fp := a.add(e)
+	if onEvent != nil {
+		onEvent(*e, fp)
+	}
+}
+
+// Source supplies events in batches. *proxy.Sink implements it.
+type Source interface {
+	// Batch returns the events emitted since the last call, reusing spare's
+	// storage, waiting briefly when there are none. ok is false once the
+	// source is closed and drained.
+	Batch(spare []core.Event) (batch []core.Event, ok bool)
+}
+
+// Run consumes events until the source is closed, flushing every interval
+// and once more at the end. onEvent, if set, sees each event and its
+// fingerprint.
+func (a *Aggregator) Run(src Source, interval time.Duration, onEvent func(core.Event, core.Fingerprint)) error {
+	next := time.Now().Add(interval)
+	var spare []core.Event
 	for {
-		select {
-		case e, ok := <-events:
-			if !ok {
-				return a.Flush(true)
-			}
-			fp := a.add(&e)
-			if onEvent != nil {
-				onEvent(e, fp)
-			}
-		case <-tick.C:
+		batch, ok := src.Batch(spare)
+		for i := range batch {
+			a.safeAdd(&batch[i], onEvent)
+		}
+		clear(batch) // drop references to query strings before reuse
+		spare = batch
+		if !ok {
+			return a.Flush(true)
+		}
+		if now := time.Now(); !now.Before(next) {
 			if err := a.Flush(false); err != nil {
 				a.logf("saving stats: %v", err)
 			}
+			next = now.Add(interval)
 		}
 	}
 }

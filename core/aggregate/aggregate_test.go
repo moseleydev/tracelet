@@ -165,11 +165,10 @@ func TestFailedSaveIsRetried(t *testing.T) {
 func TestRunDrainsAndFlushes(t *testing.T) {
 	saver := &fakeSaver{}
 	a := New(saver, false, nil)
-	events := make(chan core.Event, 3)
+	events := &sliceSource{}
 	for i := 0; i < 3; i++ {
-		events <- event("SELECT 1", t0, time.Millisecond)
+		events.pending = append(events.pending, event("SELECT 1", t0, time.Millisecond))
 	}
-	close(events)
 
 	seen := 0
 	if err := a.Run(events, time.Hour, func(core.Event, core.Fingerprint) { seen++ }); err != nil {
@@ -346,5 +345,43 @@ func TestNPlusOneWithinTraceAcrossConnections(t *testing.T) {
 	b := saver.bursts[0]
 	if b.Runs != 3 || b.Calls != 30 || b.Route != "GET /feed" || b.ParentHash != fingerprint.Of("SELECT id FROM posts LIMIT 10").Hash {
 		t.Fatalf("burst = %+v", b)
+	}
+}
+
+// sliceSource delivers its events in one batch, then reports closed.
+type sliceSource struct{ pending []core.Event }
+
+func (s *sliceSource) Batch(spare []core.Event) ([]core.Event, bool) {
+	if len(s.pending) == 0 {
+		return spare[:0], false
+	}
+	b := append(spare[:0], s.pending...)
+	s.pending = nil
+	return b, true
+}
+
+type panicSource struct{ sent bool }
+
+func (p *panicSource) Batch(spare []core.Event) ([]core.Event, bool) {
+	if p.sent {
+		return nil, false
+	}
+	p.sent = true
+	return []core.Event{{Query: "SELECT * FROM a", StartedAt: t0}, {Query: "SELECT * FROM b", StartedAt: t0}}, true
+}
+
+func TestRunSurvivesInternalErrors(t *testing.T) {
+	saver := &fakeSaver{}
+	var logged []string
+	a := New(saver, false, func(f string, args ...any) { logged = append(logged, fmt.Sprintf(f, args...)) })
+	seen := 0
+	err := a.Run(&panicSource{}, time.Hour, func(e core.Event, _ core.Fingerprint) {
+		seen++
+		if e.Query == "SELECT * FROM a" {
+			panic("bug in a consumer")
+		}
+	})
+	if err != nil || seen != 2 || len(logged) != 1 || len(saver.rollups) != 2 {
+		t.Fatalf("err %v, seen %d, logged %q, rollups %d", err, seen, logged, len(saver.rollups))
 	}
 }

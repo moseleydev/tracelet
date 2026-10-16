@@ -1,0 +1,48 @@
+name: Benchmark
+
+# Runs pgbench against PostgreSQL directly and through Tracelet on a clean
+# Linux machine. Results are posted to the job summary.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "proxy/**"
+      - "core/aggregate/**"
+      - "core/fingerprint/**"
+      - "cmd/tracelet/**"
+      - "bench/**"
+
+jobs:
+  pgbench:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16.4
+        env:
+          # A throwaway database that exists only inside this job, so no
+          # password: nothing for secret scanners to mistake for a credential.
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install pgbench
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client postgresql-contrib >/dev/null
+          pgbench --version || echo "$(dirname "$(ls /usr/lib/postgresql/*/bin/pgbench | tail -1)")" >> "$GITHUB_PATH"
+      - run: make build-go
+      - name: Run benchmark
+        env:
+          DB: postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable
+        run: |
+          echo "## Tracelet overhead ($(nproc) CPUs, $(date -u +%F))" >> "$GITHUB_STEP_SUMMARY"
+          bench/run.sh | tee -a "$GITHUB_STEP_SUMMARY"

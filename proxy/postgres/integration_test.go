@@ -17,7 +17,7 @@ import (
 // Integration tests run against a real PostgreSQL server when
 // TRACELET_TEST_POSTGRES_URL is set, e.g.
 //
-//	TRACELET_TEST_POSTGRES_URL=postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable go test ./proxy/postgres
+//	TRACELET_TEST_POSTGRES_URL=postgres://localhost:5432/postgres?sslmode=disable go test ./proxy/postgres
 func realPostgres(tb testing.TB) *url.URL {
 	tb.Helper()
 	raw := os.Getenv("TRACELET_TEST_POSTGRES_URL")
@@ -112,8 +112,12 @@ func TestIntegrationPgx(t *testing.T) {
 	// Collect what the proxy saw.
 	conn.Close(ctx)
 	var events []core.Event
-	for len(sink.Events()) > 0 {
-		events = append(events, <-sink.Events())
+	for {
+		batch, _ := sink.Batch(nil)
+		if len(batch) == 0 {
+			break
+		}
+		events = append(events, batch...)
 	}
 	find := func(prefix string) core.Event {
 		t.Helper()
@@ -163,7 +167,13 @@ func BenchmarkDirect(b *testing.B) {
 func BenchmarkViaProxy(b *testing.B) {
 	sink := proxy.NewSink(1 << 16)
 	go func() {
-		for range sink.Events() {
+		var spare []core.Event
+		for {
+			batch, ok := sink.Batch(spare)
+			if !ok {
+				return
+			}
+			spare = batch
 		}
 	}()
 	benchSelect1(b, throughProxy(b, realPostgres(b), sink))

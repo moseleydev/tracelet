@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"net"
 	"reflect"
@@ -19,8 +20,9 @@ import (
 // fakePostgres is a minimal PostgreSQL server that speaks just enough of the
 // protocol to exercise the proxy. Queries containing "boom" fail.
 type fakePostgres struct {
-	addr    string
-	cancels chan *pgproto3.CancelRequest
+	addr     string
+	cancels  chan *pgproto3.CancelRequest
+	received chan string // every simple query text, as the server got it
 }
 
 func startFakePostgres(t *testing.T) *fakePostgres {
@@ -31,7 +33,7 @@ func startFakePostgres(t *testing.T) *fakePostgres {
 	}
 	t.Cleanup(func() { ln.Close() })
 
-	f := &fakePostgres{addr: ln.Addr().String(), cancels: make(chan *pgproto3.CancelRequest, 1)}
+	f := &fakePostgres{addr: ln.Addr().String(), cancels: make(chan *pgproto3.CancelRequest, 1), received: make(chan string, 100)}
 	go func() {
 		for {
 			c, err := ln.Accept()
@@ -70,6 +72,10 @@ func (f *fakePostgres) serve(c net.Conn) {
 		}
 		switch m := msg.(type) {
 		case *pgproto3.Query:
+			select {
+			case f.received <- m.String:
+			default:
+			}
 			if strings.Contains(m.String, "boom") {
 				fail()
 			} else {
@@ -173,23 +179,30 @@ func waitReady(t *testing.T, fe *pgproto3.Frontend) {
 	}
 }
 
+// queued holds events collected from a sink but not yet consumed by a test.
+var queued = map[*proxy.Sink][]core.Event{}
+
 func nextEvent(t *testing.T, sink *proxy.Sink) core.Event {
 	t.Helper()
-	select {
-	case e := <-sink.Events():
-		return e
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for event")
-		return core.Event{}
+	deadline := time.Now().Add(2 * time.Second)
+	for len(queued[sink]) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for event")
+		}
+		batch, _ := sink.Batch(nil)
+		queued[sink] = append(queued[sink], batch...)
 	}
+	e := queued[sink][0]
+	queued[sink] = queued[sink][1:]
+	return e
 }
 
 func expectNoEvent(t *testing.T, sink *proxy.Sink) {
 	t.Helper()
-	select {
-	case e := <-sink.Events():
-		t.Fatalf("unexpected event: %+v", e)
-	case <-time.After(50 * time.Millisecond):
+	time.Sleep(50 * time.Millisecond)
+	batch, _ := sink.Batch(nil)
+	if pending := append(queued[sink], batch...); len(pending) > 0 {
+		t.Fatalf("unexpected event: %+v", pending[0])
 	}
 }
 
@@ -432,5 +445,39 @@ func TestBindParams(t *testing.T) {
 	}
 	if got := bindParams([]byte{0, 9}); got != nil {
 		t.Fatalf("truncated message should yield nil, got %v", got)
+	}
+}
+
+func TestHugeQueryPassesThroughIntact(t *testing.T) {
+	pg := startFakePostgres(t)
+	addr, sink := startProxy(t, pg.addr, false)
+	fe := connect(t, addr)
+
+	// A 3 MB bulk statement: far larger than Tracelet ever buffers.
+	huge := "INSERT INTO t VALUES " + strings.Repeat("('xxxxxxxxxx'),", 3<<20/15) + "('end')"
+	fe.Send(&pgproto3.Query{String: huge})
+	flush(t, fe)
+	waitReady(t, fe)
+
+	if got := <-pg.received; got != huge {
+		t.Fatalf("server received %d bytes, want the original %d bytes unchanged", len(got), len(huge))
+	}
+	e := nextEvent(t, sink)
+	if len(e.Query) > maxInspect || !strings.HasPrefix(huge, e.Query) {
+		t.Fatalf("event query is %d bytes; want a prefix of at most %d", len(e.Query), maxInspect)
+	}
+}
+
+func TestInspectionPanicLeavesTrafficUntouched(t *testing.T) {
+	var logged []string
+	srv := &Server{cfg: Config{Logf: func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }}}
+	tr := newTracker(srv, 7)
+	calls := 0
+	g := tr.guard(func(byte, []byte) { calls++; panic("parser bug") })
+
+	g('Q', nil) // must not propagate
+	g('Q', nil) // tracking is now off for this connection
+	if calls != 1 || !tr.broken.Load() || len(logged) != 1 || !strings.Contains(logged[0], "traffic is unaffected") {
+		t.Fatalf("calls %d, broken %v, logged %q", calls, tr.broken.Load(), logged)
 	}
 }

@@ -23,13 +23,16 @@ import (
 
 // Of returns the fingerprint of a PostgreSQL query.
 func Of(query string) core.Fingerprint {
-	raw := tokenize(query)
-	toks := collapse(raw)
+	toks := tokenize(query)
+	tmpl := template(toks) // before collapse, which reuses toks' storage
+	toks = collapse(toks)
 	for len(toks) > 0 && toks[len(toks)-1].text == ";" {
 		toks = toks[:len(toks)-1] // "SELECT 1;" and "SELECT 1" are the same query
 	}
 
 	var text, key strings.Builder
+	text.Grow(len(query))
+	key.Grow(len(query))
 	for i, t := range toks {
 		if i > 0 && spaceBetween(toks[i-1], t) {
 			text.WriteByte(' ')
@@ -63,7 +66,7 @@ func Of(query string) core.Fingerprint {
 		Hash:     strconv.FormatUint(h.Sum64(), 16),
 		Query:    display,
 		Tables:   tables(toks),
-		Template: template(raw),
+		Template: tmpl,
 	}
 }
 
@@ -91,7 +94,7 @@ type token struct {
 const placeholder = "?"
 
 func tokenize(q string) []token {
-	var toks []token
+	toks := make([]token, 0, len(q)/4+8) // roughly one token per 4-5 bytes of SQL
 	for i := 0; i < len(q); {
 		c := q[i]
 		switch {
@@ -275,8 +278,10 @@ func skipNumber(q string, i int) int {
 //
 //	IN (?, ?, ?)            -> IN (...)
 //	VALUES (?, ?), (?, ?)   -> VALUES (...)
+//
+// It works in place: the output never gets ahead of the input it reads.
 func collapse(toks []token) []token {
-	out := toks[:0:0]
+	out := toks[:0]
 	for i := 0; i < len(toks); i++ {
 		if toks[i].text == "(" {
 			if end, ok := placeholderList(toks, i); ok {
@@ -545,6 +550,7 @@ func template(toks []token) string {
 	}
 
 	var b strings.Builder
+	b.Grow(len(toks) * 6)
 	var prev token
 	for i := 0; i < len(toks); i++ {
 		t := toks[i]

@@ -129,7 +129,7 @@ func runUp(args []string) error {
 	started := time.Now()
 	var count int64
 	agg := aggregate.New(st, *captureParams, logger.Printf)
-	aggErr := agg.Run(sink.Events(), time.Second, func(e core.Event, fp core.Fingerprint) {
+	aggErr := agg.Run(sink, time.Second, func(e core.Event, fp core.Fingerprint) {
 		count++
 		if hub != nil {
 			hub.Publish(e, fp)
