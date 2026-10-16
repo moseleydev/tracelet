@@ -152,14 +152,15 @@ func (s *Store) AddBursts(deltas []core.Bursts) error {
 	defer tx.Rollback()
 	for _, b := range deltas {
 		if _, err := tx.Exec(
-			`INSERT INTO patterns (hash, parent_hash, runs, calls, max_run, last_seen) VALUES (?, ?, ?, ?, ?, ?)
+			`INSERT INTO patterns (hash, parent_hash, runs, calls, max_run, last_seen, route) VALUES (?, ?, ?, ?, ?, ?, ?)
 			 ON CONFLICT (hash) DO UPDATE SET
 				parent_hash = excluded.parent_hash,
 				runs = runs + excluded.runs,
 				calls = calls + excluded.calls,
 				max_run = max(max_run, excluded.max_run),
-				last_seen = max(last_seen, excluded.last_seen)`,
-			b.Hash, b.ParentHash, b.Runs, b.Calls, b.MaxRun, b.LastSeen.UnixNano(),
+				last_seen = max(last_seen, excluded.last_seen),
+				route = CASE WHEN excluded.route != '' THEN excluded.route ELSE route END`,
+			b.Hash, b.ParentHash, b.Runs, b.Calls, b.MaxRun, b.LastSeen.UnixNano(), b.Route,
 		); err != nil {
 			return err
 		}
@@ -170,7 +171,7 @@ func (s *Store) AddBursts(deltas []core.Bursts) error {
 // Bursts returns N+1 burst totals for fingerprints seen since the given time.
 func (s *Store) Bursts(since time.Time) (map[string]core.Bursts, error) {
 	rows, err := s.db.Query(
-		`SELECT hash, parent_hash, runs, calls, max_run, last_seen FROM patterns WHERE last_seen >= ?`,
+		`SELECT hash, parent_hash, runs, calls, max_run, last_seen, route FROM patterns WHERE last_seen >= ?`,
 		since.UnixNano())
 	if err != nil {
 		return nil, err
@@ -180,7 +181,7 @@ func (s *Store) Bursts(since time.Time) (map[string]core.Bursts, error) {
 	for rows.Next() {
 		var b core.Bursts
 		var at int64
-		if err := rows.Scan(&b.Hash, &b.ParentHash, &b.Runs, &b.Calls, &b.MaxRun, &at); err != nil {
+		if err := rows.Scan(&b.Hash, &b.ParentHash, &b.Runs, &b.Calls, &b.MaxRun, &at, &b.Route); err != nil {
 			return nil, err
 		}
 		b.LastSeen = time.Unix(0, at)

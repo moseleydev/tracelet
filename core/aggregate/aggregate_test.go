@@ -3,6 +3,7 @@ package aggregate
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"testing"
 	"time"
 
@@ -14,7 +15,16 @@ type fakeSaver struct {
 	fps     []core.Fingerprint
 	rollups map[string]core.Rollup // latest saved state per hash@bucket
 	bursts  []core.Bursts
+	traces  []core.Trace
 	fail    bool
+}
+
+func (f *fakeSaver) SaveTraces(traces []core.Trace) error {
+	if f.fail {
+		return errors.New("disk full")
+	}
+	f.traces = append(f.traces, traces...)
+	return nil
 }
 
 func (f *fakeSaver) AddBursts(deltas []core.Bursts) error {
@@ -257,5 +267,84 @@ func TestBurstsAreTrackedPerConnection(t *testing.T) {
 	a.Flush(true)
 	if len(saver.bursts) != 1 || saver.bursts[0].Runs != 2 || saver.bursts[0].Calls != 20 {
 		t.Fatalf("bursts = %+v", saver.bursts)
+	}
+}
+
+// commented appends a sqlcommenter comment like the SDKs write.
+func commented(q, trace, route string) string {
+	return fmt.Sprintf("%s /*route='%s',traceparent='00-%s-00f067aa0ba902b7-01'*/", q, url.PathEscape(route), trace)
+}
+
+const traceA = "4bf92f3577b34da6a3ce929d0e0e4736"
+
+func TestGroupsEventsIntoTraces(t *testing.T) {
+	saver := &fakeSaver{}
+	a := New(saver, false, nil)
+	// Completion order differs from start order, and connections differ.
+	a.Add(core.Event{Query: commented("SELECT * FROM items WHERE order_id = $1", traceA, "GET /orders/:id"), StartedAt: t0.Add(5 * time.Millisecond), Duration: 2 * time.Millisecond, Rows: 3, ConnID: 2})
+	a.Add(core.Event{Query: commented("SELECT * FROM orders WHERE id = $1", traceA, "GET /orders/:id"), StartedAt: t0, Duration: 4 * time.Millisecond, Rows: 1, ConnID: 1})
+	a.Add(core.Event{Query: commented("SELECT * FROM missing", traceA, "GET /orders/:id"), StartedAt: t0.Add(8 * time.Millisecond), Duration: time.Millisecond, Error: "boom", ConnID: 1})
+	a.Add(core.Event{Query: "SELECT 1", StartedAt: t0, Duration: time.Millisecond, ConnID: 3}) // no request context
+	a.Flush(true)
+
+	if len(saver.traces) != 1 {
+		t.Fatalf("traces = %+v", saver.traces)
+	}
+	tr := saver.traces[0]
+	if tr.ID != traceA || tr.Route != "GET /orders/:id" || tr.Queries != 3 || tr.Errors != 1 ||
+		!tr.Start.Equal(t0) || tr.Duration != 9*time.Millisecond || tr.DBTime != 7*time.Millisecond {
+		t.Fatalf("trace = %+v", tr)
+	}
+	if tr.Spans[0].Hash != fingerprint.Of("SELECT * FROM orders WHERE id = $1").Hash || tr.Spans[1].Offset != 5*time.Millisecond || !tr.Spans[2].Error {
+		t.Fatalf("spans out of order or wrong: %+v", tr.Spans)
+	}
+	// The comment is not part of the fingerprint, and the cache isn't
+	// flooded by a new trace id per request.
+	a.Add(core.Event{Query: commented("SELECT * FROM orders WHERE id = $1", "5bf92f3577b34da6a3ce929d0e0e4736", "GET /orders/:id"), StartedAt: t0, ConnID: 1})
+	if len(a.cache) != 4 {
+		t.Fatalf("cache has %d entries, want 4 (one per query shape)", len(a.cache))
+	}
+}
+
+func TestTraceClosesWhenRequestGoesQuiet(t *testing.T) {
+	saver := &fakeSaver{}
+	a := New(saver, false, nil)
+	now := t0
+	a.now = func() time.Time { return now }
+	a.Add(core.Event{Query: commented("SELECT 1", traceA, "/x"), StartedAt: t0, ConnID: 1})
+
+	now = t0.Add(traceIdle / 2)
+	a.Flush(false)
+	if len(saver.traces) != 0 {
+		t.Fatal("a request still within the idle window must stay open")
+	}
+	now = t0.Add(traceIdle + time.Second)
+	a.Flush(false)
+	if len(saver.traces) != 1 {
+		t.Fatal("a quiet request should be saved")
+	}
+}
+
+func TestNPlusOneWithinTraceAcrossConnections(t *testing.T) {
+	saver := &fakeSaver{}
+	a := New(saver, false, nil)
+	for r := 0; r < 3; r++ {
+		trace := fmt.Sprintf("%032x", r+1)
+		at := t0.Add(time.Duration(r) * time.Second)
+		a.Add(core.Event{Query: commented("SELECT id FROM posts LIMIT 10", trace, "GET /feed"), StartedAt: at, Duration: time.Millisecond, ConnID: 1})
+		for i := 0; i < 10; i++ {
+			at = at.Add(2 * time.Millisecond)
+			// A pool that hands out a different connection every time.
+			a.Add(core.Event{Query: commented(fmt.Sprintf("SELECT name FROM authors WHERE id = %d", i), trace, "GET /feed"),
+				StartedAt: at, Duration: 100 * time.Microsecond, ConnID: uint64(1 + i%4)})
+		}
+	}
+	a.Flush(true)
+	if len(saver.bursts) != 1 {
+		t.Fatalf("bursts = %+v", saver.bursts)
+	}
+	b := saver.bursts[0]
+	if b.Runs != 3 || b.Calls != 30 || b.Route != "GET /feed" || b.ParentHash != fingerprint.Of("SELECT id FROM posts LIMIT 10").Hash {
+		t.Fatalf("burst = %+v", b)
 	}
 }

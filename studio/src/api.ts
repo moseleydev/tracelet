@@ -97,6 +97,46 @@ export interface PlanRecord {
   error?: string
 }
 
+export interface RouteStats {
+  route: string // "" for requests without a route
+  requests: number
+  queries: number
+  avg_queries: number
+  max_queries: number
+  db_time: number // ns, all requests
+  p50: number // ns, database time per request
+  p95: number
+  errors: number
+}
+
+export interface Span {
+  h: string // fingerprint hash
+  o: number // ns offset from the request start
+  d: number // ns
+  r: number
+  e?: boolean
+  c?: number
+}
+
+export interface Trace {
+  id: string
+  route: string
+  start: string
+  duration: number // ns
+  queries: number
+  db_time: number // ns
+  errors: number
+  truncated?: boolean
+  spans?: Span[]
+}
+
+export interface TraceDetail {
+  trace: Trace
+  queries: Record<string, Fingerprint>
+}
+
+export type TraceOrder = 'slowest' | 'recent' | 'queries'
+
 export interface Info {
   version: string
   upstream?: string
@@ -112,6 +152,7 @@ export interface LiveEvent {
   h: string // fingerprint hash
   q: string // normalized query
   t: string[] | null
+  rt?: string // request route
   d: number // µs
   r: number
   e?: boolean
@@ -136,6 +177,10 @@ export const api = {
   series: (hash: string, since: string) =>
     get<SeriesPoint[]>(`/api/series?hash=${encodeURIComponent(hash)}&since=${since}`),
   findings: (since: string) => get<Finding[]>(`/api/findings?since=${since}`),
+  routes: (since: string) => get<RouteStats[]>(`/api/routes?since=${since}`),
+  traces: (route: string, order: TraceOrder, since: string) =>
+    get<Trace[]>(`/api/traces?route=${encodeURIComponent(route)}&order=${order}&since=${since}&limit=50`),
+  trace: (id: string) => get<TraceDetail>(`/api/trace?id=${encodeURIComponent(id)}`),
   plan: async (hash: string): Promise<PlanRecord | null> => {
     const res = await fetch(`/api/plan?hash=${encodeURIComponent(hash)}`)
     if (res.status === 404) return null

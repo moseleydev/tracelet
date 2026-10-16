@@ -17,7 +17,8 @@ type LiveEvent struct {
 	Duration int64    `json:"d"` // microseconds
 	Rows     int64    `json:"r"`
 	Error    bool     `json:"e,omitempty"`
-	At       int64    `json:"at"` // unix milliseconds, completion time
+	At       int64    `json:"at"`           // unix milliseconds, completion time
+	Route    string   `json:"rt,omitempty"` // request route, from sqlcommenter
 }
 
 // liveBatch is what one Server-Sent Event carries.
@@ -64,6 +65,7 @@ func (h *Hub) Publish(e core.Event, fp core.Fingerprint) {
 		Rows:     e.Rows,
 		Error:    e.Error != "",
 		At:       e.StartedAt.Add(e.Duration).UnixMilli(),
+		Route:    e.Route,
 	})
 }
 

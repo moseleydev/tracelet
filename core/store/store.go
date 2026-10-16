@@ -83,6 +83,23 @@ var migrations = []string{
 	ALTER TABLE findings ADD COLUMN idx TEXT NOT NULL DEFAULT '';        -- JSON IndexSuggestion
 	ALTER TABLE findings ADD COLUMN simulation TEXT NOT NULL DEFAULT ''; -- JSON Simulation
 	`,
+	// v4: request traces from sqlcommenter context, and the route of N+1 bursts.
+	`
+	CREATE TABLE traces (
+		id          TEXT PRIMARY KEY,
+		route       TEXT    NOT NULL,
+		started_at  INTEGER NOT NULL, -- unix nanoseconds
+		duration_ns INTEGER NOT NULL,
+		queries     INTEGER NOT NULL,
+		db_ns       INTEGER NOT NULL,
+		errors      INTEGER NOT NULL,
+		truncated   INTEGER NOT NULL,
+		spans       TEXT    NOT NULL  -- JSON []Span
+	);
+	CREATE INDEX traces_by_time ON traces (started_at);
+	CREATE INDEX traces_by_route ON traces (route, started_at);
+	ALTER TABLE patterns ADD COLUMN route TEXT NOT NULL DEFAULT '';
+	`,
 }
 
 var schemaVersion = 1 + len(migrations)

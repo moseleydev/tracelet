@@ -60,12 +60,17 @@ The UI is embedded in the Go binary and has no chart or animation dependencies: 
 - [ ] More detectors (good first issues): unbounded query, `SELECT *`, duplicate reads, `OFFSET` pagination, unused indexes
 - [x] What-if index simulation with HypoPG: estimated reduction in work, and whether the planner would use the index, before creating it (btree, hash and brin; GIN/GiST can't be simulated)
 
-## Phase 5: Request context
+## Phase 5: Request context ✅
 
-- [ ] Read route and trace id from sqlcommenter comments
-- [ ] Node and Python SDKs
-- [ ] Request waterfall view
-- [ ] Trace-based N+1 detection
+- [x] Read route and trace id from sqlcommenter comments (`route`, `traceparent`, or `controller` + `action`)
+- [x] Group queries into requests; per-route stats (requests, queries per request, DB time per request)
+- [x] Node SDK (`tracelet-sdk`): Express middleware, node-postgres, `comment()`
+- [x] Python SDK (`tracelet-sdk`): Django, Flask, ASGI/FastAPI, WSGI, SQLAlchemy, `comment()`
+- [x] Requests tab with per-request waterfalls; routes as sources in the live topology
+- [x] Trace-based N+1 detection, which works even when every query uses a different pooled connection
+- [x] Shared sqlcommenter test cases across Go, Node and Python
+- [ ] Publish the SDKs to npm and PyPI
+- [ ] More integrations (Prisma, Knex, psycopg without an ORM, Rails via existing sqlcommenter gems)
 
 ## Phase 6: Record, replay, simulate
 

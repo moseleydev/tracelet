@@ -5,10 +5,12 @@
 package aggregate
 
 import (
+	"sort"
 	"time"
 
 	"github.com/moseleydev/tracelet/core"
 	"github.com/moseleydev/tracelet/core/fingerprint"
+	"github.com/moseleydev/tracelet/core/sqlcomment"
 )
 
 // Saver persists fingerprints, rollups and burst patterns. *store.Store
@@ -16,6 +18,7 @@ import (
 type Saver interface {
 	Save(fps []core.Fingerprint, rollups []core.Rollup) error
 	AddBursts(deltas []core.Bursts) error
+	SaveTraces(traces []core.Trace) error
 }
 
 // Aggregator groups events by fingerprint and time bucket. It is not safe for
@@ -35,6 +38,26 @@ type Aggregator struct {
 
 	conns  map[uint64]*connState   // per-connection run tracking
 	bursts map[string]*core.Bursts // bursts seen since the last flush
+
+	traces map[string]*openTrace // requests still receiving queries
+	closed []core.Trace          // finished requests waiting to be saved
+}
+
+// openTrace collects the queries of one request until it goes quiet.
+type openTrace struct {
+	route     string
+	spans     []rawSpan
+	truncated bool
+	lastSeen  time.Time
+}
+
+type rawSpan struct {
+	hash  string
+	start time.Time
+	dur   time.Duration
+	rows  int64
+	err   bool
+	conn  uint64
 }
 
 // connState follows the sequence of queries on one connection to spot the
@@ -70,6 +93,13 @@ const (
 	burstGap = 10 * time.Millisecond
 
 	connIdle = time.Minute // forget connections idle this long
+
+	// A request is finished once no query has carried its trace id for
+	// traceIdle. Very long or chatty requests are capped so one runaway
+	// job can't exhaust memory.
+	traceIdle     = 2 * time.Second
+	maxTraceSpans = 1000
+	maxOpenTraces = 10_000
 )
 
 // New returns an Aggregator that saves to saver. When captureParams is false,
@@ -89,6 +119,7 @@ func New(saver Saver, captureParams bool, logf func(string, ...any)) *Aggregator
 		dirty:         map[key]bool{},
 		conns:         map[uint64]*connState{},
 		bursts:        map[string]*core.Bursts{},
+		traces:        map[string]*openTrace{},
 	}
 }
 
@@ -106,8 +137,14 @@ func (a *Aggregator) Fingerprint(query string) core.Fingerprint {
 }
 
 // Add records one event and returns its fingerprint.
-func (a *Aggregator) Add(e core.Event) core.Fingerprint {
-	fp := a.Fingerprint(e.Query)
+func (a *Aggregator) Add(e core.Event) core.Fingerprint { return a.add(&e) }
+
+// add records e, first filling its trace id and route from any sqlcommenter
+// comment, so callers see the annotated event.
+func (a *Aggregator) add(e *core.Event) core.Fingerprint {
+	// Cache by the query without its comment: the comment carries a fresh
+	// trace id on every request.
+	fp := a.Fingerprint(sqlcomment.Annotate(e))
 	if !a.known[fp.Hash] {
 		a.known[fp.Hash] = true
 		a.newFps = append(a.newFps, fp)
@@ -138,8 +175,67 @@ func (a *Aggregator) Add(e core.Event) core.Fingerprint {
 			r.SlowQuery, r.SlowParams = e.Query, e.Params
 		}
 	}
-	a.trackRun(e, fp.Hash)
+	if e.TraceID != "" {
+		a.addToTrace(e, fp.Hash)
+	} else {
+		a.trackRun(*e, fp.Hash) // no request context: fall back to per-connection runs
+	}
 	return fp
+}
+
+func (a *Aggregator) addToTrace(e *core.Event, hash string) {
+	t := a.traces[e.TraceID]
+	if t == nil {
+		if len(a.traces) >= maxOpenTraces {
+			return
+		}
+		t = &openTrace{}
+		a.traces[e.TraceID] = t
+	}
+	if t.route == "" {
+		t.route = e.Route
+	}
+	t.lastSeen = a.now()
+	if len(t.spans) >= maxTraceSpans {
+		t.truncated = true
+		return
+	}
+	t.spans = append(t.spans, rawSpan{hash: hash, start: e.StartedAt, dur: e.Duration, rows: e.Rows, err: e.Error != "", conn: e.ConnID})
+}
+
+// finishTrace turns collected queries into a Trace and looks for N+1 runs
+// within the request.
+func (a *Aggregator) finishTrace(id string, t *openTrace) core.Trace {
+	sort.SliceStable(t.spans, func(i, j int) bool { return t.spans[i].start.Before(t.spans[j].start) })
+	tr := core.Trace{ID: id, Route: t.route, Start: t.spans[0].start, Queries: len(t.spans), Truncated: t.truncated}
+	var end time.Time
+	for _, s := range t.spans {
+		tr.Spans = append(tr.Spans, core.Span{Hash: s.hash, Offset: s.start.Sub(tr.Start), Duration: s.dur, Rows: s.rows, Error: s.err, ConnID: s.conn})
+		tr.DBTime += s.dur
+		if s.err {
+			tr.Errors++
+		}
+		if e := s.start.Add(s.dur); e.After(end) {
+			end = e
+		}
+	}
+	tr.Duration = end.Sub(tr.Start)
+
+	// N+1 within one request: the same query back to back, right after a
+	// different one. Unlike per-connection runs, this works even when the
+	// app's pool hands out a different connection for each query.
+	for i := 0; i < len(t.spans); {
+		j := i
+		for j < len(t.spans) && t.spans[j].hash == t.spans[i].hash {
+			j++
+		}
+		if i > 0 {
+			last := t.spans[j-1]
+			a.recordBurst(t.spans[i].hash, t.spans[i-1].hash, int64(j-i), last.start.Add(last.dur), t.route)
+		}
+		i = j
+	}
+	return tr
 }
 
 func (a *Aggregator) trackRun(e core.Event, hash string) {
@@ -167,26 +263,50 @@ func (a *Aggregator) trackRun(e core.Event, hash string) {
 
 // endRun records the connection's current run if it was a burst.
 func (a *Aggregator) endRun(st *connState) {
-	if st.run >= minBurst && st.parent != "" && st.parent != st.hash {
-		b := a.bursts[st.hash]
-		if b == nil {
-			b = &core.Bursts{Hash: st.hash}
-			a.bursts[st.hash] = b
-		}
-		b.ParentHash = st.parent
-		b.Runs++
-		b.Calls += st.run
-		b.MaxRun = max(b.MaxRun, st.run)
-		b.LastSeen = st.lastEnd
-	}
+	a.recordBurst(st.hash, st.parent, st.run, st.lastEnd, "")
 	st.run = 0
+}
+
+// recordBurst counts a run of one query if it is long enough to be an N+1.
+func (a *Aggregator) recordBurst(hash, parent string, run int64, end time.Time, route string) {
+	if run < minBurst || parent == "" || parent == hash {
+		return
+	}
+	b := a.bursts[hash]
+	if b == nil {
+		b = &core.Bursts{Hash: hash}
+		a.bursts[hash] = b
+	}
+	b.ParentHash = parent
+	b.Runs++
+	b.Calls += run
+	b.MaxRun = max(b.MaxRun, run)
+	b.LastSeen = end
+	if route != "" {
+		b.Route = route
+	}
 }
 
 // Flush saves every bucket that changed since the last flush and closes
 // buckets that have ended. With final set, all buckets are closed.
 func (a *Aggregator) Flush(final bool) error {
-	// Close runs on connections that have gone quiet.
 	now := a.now()
+
+	// Finish requests that have gone quiet.
+	for id, t := range a.traces {
+		if final || now.Sub(t.lastSeen) > traceIdle {
+			a.closed = append(a.closed, a.finishTrace(id, t))
+			delete(a.traces, id)
+		}
+	}
+	if len(a.closed) > 0 {
+		if err := a.saver.SaveTraces(a.closed); err != nil {
+			return err // keep them and retry next flush
+		}
+		a.closed = a.closed[:0]
+	}
+
+	// Close runs on connections that have gone quiet.
 	for id, st := range a.conns {
 		if final || now.Sub(st.lastEnd) > burstGap {
 			a.endRun(st)
@@ -243,7 +363,7 @@ func (a *Aggregator) Run(events <-chan core.Event, interval time.Duration, onEve
 			if !ok {
 				return a.Flush(true)
 			}
-			fp := a.Add(e)
+			fp := a.add(&e)
 			if onEvent != nil {
 				onEvent(e, fp)
 			}

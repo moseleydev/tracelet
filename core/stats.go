@@ -103,4 +103,29 @@ type Bursts struct {
 	Calls      int64     `json:"calls"`       // calls made inside bursts
 	MaxRun     int64     `json:"max_run"`     // longest burst
 	LastSeen   time.Time `json:"last_seen"`
+	Route      string    `json:"route,omitempty"` // request route of the latest burst, when known
+}
+
+// Trace is one application request: every query that carried the same
+// trace id, in the order they started.
+type Trace struct {
+	ID        string        `json:"id"`
+	Route     string        `json:"route"`
+	Start     time.Time     `json:"start"`
+	Duration  time.Duration `json:"duration"` // first query start to last query end
+	Queries   int           `json:"queries"`
+	DBTime    time.Duration `json:"db_time"` // sum of query durations
+	Errors    int           `json:"errors"`
+	Truncated bool          `json:"truncated,omitempty"` // more queries than Tracelet keeps per trace
+	Spans     []Span        `json:"spans,omitempty"`
+}
+
+// Span is one query within a trace.
+type Span struct {
+	Hash     string        `json:"h"`
+	Offset   time.Duration `json:"o"` // start, relative to the trace start
+	Duration time.Duration `json:"d"`
+	Rows     int64         `json:"r"`
+	Error    bool          `json:"e,omitempty"`
+	ConnID   uint64        `json:"c,omitempty"`
 }

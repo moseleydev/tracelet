@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { fmtCount, fmtMs, nsToMs, speedLabel, speedOf, usToMs } from './api'
-import type { Finding, LiveEvent, Severity, Speed, Stats, TableStats } from './api'
+import type { Finding, LiveEvent, RouteStats, Severity, Speed, Stats, TableStats } from './api'
 import { severityLabel } from './api'
 import { usePrefersReducedMotion } from './hooks'
 
 interface Props {
   issues: Map<string, Finding[]>
+  routes: RouteStats[]
   stats: Stats[]
   tables: TableStats[]
   subscribe: (l: (e: LiveEvent) => void) => () => void
@@ -59,10 +60,29 @@ interface Particle {
   onArrive: (seg: number) => void
 }
 
+// Where queries come from: one node per route when the app sends request
+// context (sqlcommenter), else a single "Your app" node.
+interface SourceNode {
+  kind: 'source'
+  key: string // the route, or ALL for "Your app" / "Other requests"
+  label: string
+  stats: RouteStats | null
+  x: number
+  y: number
+  ty: number
+  w: number
+  h: number
+  heat: number
+}
+
+const ALL = '\u0000all'
+
 interface Scene {
   width: number
   height: number
-  app: Point & { w: number; h: number }
+  sources: SourceNode[]
+  bySource: Map<string, SourceNode>
+  byRoute: boolean // sources are routes, so edges come from observed traffic
   queries: QueryNode[]
   byHash: Map<string, QueryNode>
   other: QueryNode | null
@@ -112,6 +132,7 @@ function buildScene(
   stats: Stats[],
   tableStats: TableStats[],
   issues: Map<string, Finding[]>,
+  routes: RouteStats[],
   prev: Scene | null,
 ): Scene {
   const narrow = width < 640
@@ -123,8 +144,37 @@ function buildScene(
   const shown = stats.slice(0, stats.length > maxQ ? maxQ - 1 : maxQ)
   const rest = stats.slice(shown.length)
 
-  const app = { x: narrow ? 16 : Math.max(24, width * 0.04), y: top + usable / 2, w: narrow ? 44 : 96, h: 44 }
-  const qx = app.x + app.w + (narrow ? 24 : Math.max(60, width * 0.08))
+  // Sources: the busiest routes, plus "Other requests" for the rest.
+  const sx = narrow ? 12 : Math.max(20, width * 0.025)
+  const sw = narrow ? 52 : Math.min(210, Math.max(110, width * 0.17))
+  const maxS = Math.max(2, Math.min(8, Math.floor(usable / (NODE_H + 16))))
+  const shownRoutes = routes.slice(0, routes.length > maxS ? maxS - 1 : maxS)
+  const sourceDefs: { key: string; label: string; stats: RouteStats | null }[] = shownRoutes.map((r) => ({
+    key: r.route,
+    label: r.route || '(no route)',
+    stats: r,
+  }))
+  if (routes.length === 0) sourceDefs.push({ key: ALL, label: narrow ? 'App' : 'Your app', stats: null })
+  else if (routes.length > shownRoutes.length) sourceDefs.push({ key: ALL, label: 'Other requests', stats: null })
+  const sgap = usable / sourceDefs.length
+  ctx.font = `600 12px ${SANS}`
+  const sources: SourceNode[] = sourceDefs.map((d, i) => {
+    const old = prev?.bySource.get(d.key)
+    const ty = top + sgap * (i + 0.5)
+    return {
+      kind: 'source',
+      ...d,
+      label: truncate(ctx, d.label, sw - 16),
+      x: sx,
+      y: old && prev?.width === width ? old.y : ty,
+      ty,
+      w: sw,
+      h: 36,
+      heat: old?.heat ?? 0,
+    }
+  })
+
+  const qx = sx + sw + (narrow ? 20 : Math.max(50, width * 0.06))
   const qw = Math.min(narrow ? width * 0.5 : 460, width * (narrow ? 0.5 : 0.42))
   const tx = Math.min(width - (narrow ? 90 : 170), qx + qw + (narrow ? 40 : Math.max(90, width * 0.12)))
 
@@ -205,7 +255,9 @@ function buildScene(
   return {
     width,
     height,
-    app,
+    sources,
+    bySource: new Map(sources.map((s) => [s.key, s])),
+    byRoute: routes.length > 0,
     queries,
     byHash: new Map(queries.filter((q) => q.hash).map((q) => [q.hash as string, q])),
     other,
@@ -219,16 +271,18 @@ function buildScene(
 interface Hover {
   x: number
   y: number
-  node: QueryNode | TableNode
+  node: QueryNode | TableNode | SourceNode
 }
 
-export function Topology({ issues, stats, tables, subscribe, live, selected, onSelect, loaded }: Props) {
+export function Topology({ issues, routes, stats, tables, subscribe, live, selected, onSelect, loaded }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const sceneRef = useRef<Scene | null>(null)
   const particles = useRef<Particle[]>([])
+  // Route -> query links seen in live traffic, drawn as edges.
+  const links = useRef(new Set<string>())
   const pending = useRef<{ at: number; e: LiveEvent }[]>([])
-  const hoverRef = useRef<QueryNode | TableNode | null>(null)
+  const hoverRef = useRef<QueryNode | TableNode | SourceNode | null>(null)
   const selectedRef = useRef(selected)
   const [hover, setHover] = useState<Hover | null>(null)
   const [size, setSize] = useState({ w: 0, h: 0 })
@@ -259,10 +313,10 @@ export function Topology({ issues, stats, tables, subscribe, live, selected, onS
     if (!ctx) return
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     const prev = sceneRef.current
-    sceneRef.current = buildScene(ctx, size.w, size.h, stats, tables, issues, prev)
+    sceneRef.current = buildScene(ctx, size.w, size.h, stats, tables, issues, routes, prev)
     // Particles follow paths of the old layout; drop them if it moved.
     if (!prev || prev.width !== size.w || prev.height !== size.h) particles.current = []
-  }, [stats, tables, issues, size])
+  }, [stats, tables, issues, routes, size])
 
   // Queue live events, spread over the batch interval so they don't clump.
   useEffect(() => {
@@ -292,7 +346,10 @@ export function Topology({ issues, stats, tables, subscribe, live, selected, onS
       const speed = speedOf(usToMs(e.d))
       const entry = { x: q.x, y: q.y + q.h / 2 }
       const exit = { x: q.x + q.w, y: q.y + q.h / 2 }
-      const segments: Particle['segments'] = [bezier({ x: scene.app.x + scene.app.w, y: scene.app.y }, entry)]
+      const src = scene.bySource.get(e.rt ?? '') ?? scene.bySource.get(ALL) ?? scene.sources[0]
+      if (src.key !== ALL && q.hash) links.current.add(`${src.key}|${q.hash}`)
+      src.heat = Math.min(1, src.heat + 0.08)
+      const segments: Particle['segments'] = [bezier({ x: src.x + src.w, y: src.y }, entry)]
       const targets = (e.t ?? []).map((t) => scene.byTable.get(t)).filter((t): t is TableNode => !!t)
       const target = targets.length ? targets[Math.floor(Math.random() * targets.length)] : null
       if (target) segments.push(bezier(exit, { x: target.x - 8, y: target.y }))
@@ -341,12 +398,12 @@ export function Topology({ issues, stats, tables, subscribe, live, selected, onS
 
         const decay = Math.exp(-dt / 900)
         const glide = reduced ? 1 : 1 - Math.exp(-dt / 180)
-        for (const n of [...scene.queries, ...scene.tables]) {
+        for (const n of [...scene.sources, ...scene.queries, ...scene.tables]) {
           n.heat *= decay
           n.y += (n.ty - n.y) * glide
         }
 
-        draw(ctx, scene, particles.current, colors, hoverRef.current, selectedRef.current)
+        draw(ctx, scene, particles.current, colors, hoverRef.current, selectedRef.current, links.current)
       }
       raf = requestAnimationFrame(frame)
     }
@@ -357,9 +414,12 @@ export function Topology({ issues, stats, tables, subscribe, live, selected, onS
     }
   }, [reduced])
 
-  const hitTest = (x: number, y: number): QueryNode | TableNode | null => {
+  const hitTest = (x: number, y: number): QueryNode | TableNode | SourceNode | null => {
     const scene = sceneRef.current
     if (!scene) return null
+    for (const s of scene.sources) {
+      if (x >= s.x && x <= s.x + s.w && Math.abs(y - s.y) <= s.h / 2) return s
+    }
     for (const q of scene.queries) {
       if (x >= q.x && x <= q.x + q.w && y >= q.y && y <= q.y + q.h) return q
     }
@@ -435,6 +495,30 @@ function NodeTooltip({ hover, width }: { hover: Hover; width: number }) {
   const n = hover.node
   const left = Math.min(hover.x + 16, width - 390)
   const style = { left: Math.max(8, left), top: hover.y + 16 }
+  if (n.kind === 'source') {
+    const r = n.stats
+    return (
+      <div className="tooltip" style={style}>
+        <code>{r ? r.route || '(no route)' : n.label}</code>
+        {r ? (
+          <>
+            <div className="row">
+              Requests <b className="num">{fmtCount(r.requests)}</b>
+            </div>
+            <div className="row">
+              Queries per request <b className="num">{r.avg_queries.toFixed(1)}</b>
+            </div>
+            <div className="row">
+              DB time per request (p95) <b className="num">{fmtMs(nsToMs(r.p95))}</b>
+            </div>
+            <div className="row dim">See the Requests tab for waterfalls</div>
+          </>
+        ) : (
+          <div className="row">Queries without request context, or from less busy routes.</div>
+        )}
+      </div>
+    )
+  }
   if (n.kind === 'table') {
     return (
       <div className="tooltip" style={style}>
@@ -534,8 +618,9 @@ function draw(
   s: Scene,
   particles: Particle[],
   c: Colors,
-  hover: QueryNode | TableNode | null,
+  hover: QueryNode | TableNode | SourceNode | null,
   selected: string | null,
+  links: Set<string>,
 ) {
   ctx.clearRect(0, 0, s.width, s.height)
   const focusHash = hover?.kind === 'query' ? hover.hash : selected
@@ -548,7 +633,16 @@ function draw(
     ctx.strokeStyle = lit ? c.accent : c.baseline
     ctx.globalAlpha = lit ? 0.9 : 0.55
     const entry = { x: q.x, y: q.y + q.h / 2 }
-    strokeCurve(ctx, bezier({ x: s.app.x + s.app.w, y: s.app.y }, entry))
+    for (const src of s.sources) {
+      const linked = !s.byRoute || (q.hash !== null && links.has(`${src.key}|${q.hash}`)) || (src.key === ALL && q.hash === null)
+      if (!linked) continue
+      const srcLit = lit || (hover?.kind === 'source' && hover === src)
+      ctx.strokeStyle = srcLit ? c.accent : c.baseline
+      ctx.globalAlpha = srcLit ? 0.9 : 0.55
+      strokeCurve(ctx, bezier({ x: src.x + src.w, y: src.y }, entry))
+    }
+    ctx.strokeStyle = lit ? c.accent : c.baseline
+    ctx.globalAlpha = lit ? 0.9 : 0.55
     for (const name of q.tables) {
       const t = s.byTable.get(name)
       if (t) strokeCurve(ctx, bezier({ x: q.x + q.w, y: q.y + q.h / 2 }, { x: t.x - 8, y: t.y }))
@@ -556,17 +650,25 @@ function draw(
   }
   ctx.globalAlpha = 1
 
-  // App node.
-  roundRect(ctx, s.app.x, s.app.y - s.app.h / 2, s.app.w, s.app.h, 10)
-  ctx.fillStyle = c.surface
-  ctx.fill()
-  ctx.strokeStyle = c.baseline
-  ctx.stroke()
-  ctx.fillStyle = c.text
-  ctx.font = `600 13px ${SANS}`
-  ctx.textAlign = 'center'
-  ctx.textBaseline = 'middle'
-  ctx.fillText(s.app.w > 60 ? 'Your app' : 'App', s.app.x + s.app.w / 2, s.app.y)
+  // Source nodes: routes (or "Your app").
+  for (const src of s.sources) {
+    roundRect(ctx, src.x, src.y - src.h / 2, src.w, src.h, 10)
+    ctx.fillStyle = c.surface
+    ctx.fill()
+    if (src.heat > 0.01) {
+      ctx.globalAlpha = Math.min(0.22, src.heat * 0.25)
+      ctx.fillStyle = c.accent
+      ctx.fill()
+      ctx.globalAlpha = 1
+    }
+    ctx.strokeStyle = hover === src ? c.text2 : c.baseline
+    ctx.stroke()
+    ctx.fillStyle = c.text
+    ctx.font = src.key === ALL ? `600 13px ${SANS}` : `600 12px ui-monospace, "SF Mono", Menlo, monospace`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(src.label, src.x + src.w / 2, src.y)
+  }
 
   // Query nodes.
   ctx.textAlign = 'left'

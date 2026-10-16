@@ -10,10 +10,13 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
-	"math/rand/v2"
+	mrand "math/rand/v2"
+	"net/url"
 	"os"
 	"os/signal"
 	"sync"
@@ -21,6 +24,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -82,13 +86,12 @@ var endpoints = []endpoint{
 	{"GET /products/:id", 30, func(ctx context.Context, db *pgxpool.Pool) error {
 		// Fast: primary-key lookup.
 		var name string
-		return db.QueryRow(ctx, `SELECT name FROM shop_products WHERE id = $1`, 1+rand.IntN(2000)).Scan(&name)
+		return db.QueryRow(ctx, tag(ctx, `SELECT name FROM shop_products WHERE id = $1`), 1+mrand.IntN(2000)).Scan(&name)
 	}},
 	{"GET /customers/:id/orders", 15, func(ctx context.Context, db *pgxpool.Pool) error {
 		// Slow: no index on customer_id, so every call scans 300k orders.
-		rows, err := db.Query(ctx,
-			`SELECT id, amount, status FROM shop_orders WHERE customer_id = $1 ORDER BY created_at DESC LIMIT 20`,
-			1+rand.IntN(20000))
+		rows, err := db.Query(ctx, tag(ctx, `SELECT id, amount, status FROM shop_orders WHERE customer_id = $1 ORDER BY created_at DESC LIMIT 20`),
+			1+mrand.IntN(20000))
 		if err != nil {
 			return err
 		}
@@ -97,7 +100,7 @@ var endpoints = []endpoint{
 	}},
 	{"GET /orders/recent", 8, func(ctx context.Context, db *pgxpool.Pool) error {
 		// N+1: one query for the page, then one per order for its customer.
-		rows, err := db.Query(ctx, `SELECT customer_id FROM shop_orders ORDER BY id DESC LIMIT 20`)
+		rows, err := db.Query(ctx, tag(ctx, `SELECT customer_id FROM shop_orders ORDER BY id DESC LIMIT 20`))
 		if err != nil {
 			return err
 		}
@@ -112,7 +115,7 @@ var endpoints = []endpoint{
 		}
 		for _, id := range ids {
 			var email string
-			if err := db.QueryRow(ctx, `SELECT email FROM shop_customers WHERE id = $1`, id).Scan(&email); err != nil {
+			if err := db.QueryRow(ctx, tag(ctx, `SELECT email FROM shop_customers WHERE id = $1`), id).Scan(&email); err != nil {
 				return err
 			}
 		}
@@ -122,13 +125,13 @@ var endpoints = []endpoint{
 		// Slow: aggregate over an unindexed column.
 		var avg *float64
 		var n int
-		return db.QueryRow(ctx, `SELECT avg(rating), count(*) FROM shop_reviews WHERE product_id = $1`,
-			1+rand.IntN(2000)).Scan(&avg, &n)
+		return db.QueryRow(ctx, tag(ctx, `SELECT avg(rating), count(*) FROM shop_reviews WHERE product_id = $1`),
+			1+mrand.IntN(2000)).Scan(&avg, &n)
 	}},
 	{"GET /search", 5, func(ctx context.Context, db *pgxpool.Pool) error {
 		// Slow: leading wildcard defeats any index.
-		rows, err := db.Query(ctx, `SELECT id, email FROM shop_customers WHERE email LIKE '%' || $1 || '%' LIMIT 10`,
-			fmt.Sprint(rand.IntN(999)))
+		rows, err := db.Query(ctx, tag(ctx, `SELECT id, email FROM shop_customers WHERE email LIKE '%' || $1 || '%' LIMIT 10`),
+			fmt.Sprint(mrand.IntN(999)))
 		if err != nil {
 			return err
 		}
@@ -141,19 +144,18 @@ var endpoints = []endpoint{
 			return err
 		}
 		defer tx.Rollback(ctx)
-		product := 1 + rand.IntN(2000)
-		if _, err := tx.Exec(ctx, `UPDATE shop_products SET stock = stock - 1 WHERE id = $1`, product); err != nil {
+		product := 1 + mrand.IntN(2000)
+		if _, err := tx.Exec(ctx, tag(ctx, `UPDATE shop_products SET stock = stock - 1 WHERE id = $1`), product); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO shop_orders (customer_id, product_id, amount, status) VALUES ($1, $2, $3, 'paid')`,
-			1+rand.IntN(20000), product, rand.Float64()*300); err != nil {
+		if _, err := tx.Exec(ctx, tag(ctx, `INSERT INTO shop_orders (customer_id, product_id, amount, status) VALUES ($1, $2, $3, 'paid')`),
+			1+mrand.IntN(20000), product, mrand.Float64()*300); err != nil {
 			return err
 		}
 		return tx.Commit(ctx)
 	}},
 	{"GET /categories", 12, func(ctx context.Context, db *pgxpool.Pool) error {
-		rows, err := db.Query(ctx, `SELECT category, count(*) FROM shop_products GROUP BY category`)
+		rows, err := db.Query(ctx, tag(ctx, `SELECT category, count(*) FROM shop_products GROUP BY category`))
 		if err != nil {
 			return err
 		}
@@ -163,7 +165,7 @@ var endpoints = []endpoint{
 	{"POST /coupons/apply", 1, func(ctx context.Context, db *pgxpool.Pool) error {
 		// Broken: the coupons table was never created.
 		var pct int
-		db.QueryRow(ctx, `SELECT percent FROM shop_coupons WHERE code = $1`, "SAVE10").Scan(&pct)
+		db.QueryRow(ctx, tag(ctx, `SELECT percent FROM shop_coupons WHERE code = $1`), "SAVE10").Scan(&pct)
 		return nil // the app swallows this error; Tracelet still sees it
 	}},
 }
@@ -174,6 +176,7 @@ func main() {
 	workers := flag.Int("workers", 4, "concurrent connections")
 	duration := flag.Duration("duration", 0, "how long to run; 0 runs until Ctrl+C")
 	reset := flag.Bool("reset", false, "drop and re-seed the shop_ tables first")
+	trace := flag.Bool("trace", true, "tag queries with their request route and trace id (sqlcommenter), like the Tracelet SDKs do")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -189,13 +192,18 @@ func main() {
 		log.Fatal(err)
 	}
 	cfg.MaxConns = int32(*workers)
+	if *trace {
+		// Every tagged query text is unique (it carries a trace id), so skip
+		// pgx's per-text prepared statement cache.
+		cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeExec
+	}
 	db, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer db.Close()
 
-	if err := prepare(ctx, db, *reset); err != nil {
+	if err := prepare(context.Background(), db, *reset); err != nil {
 		log.Fatal(err)
 	}
 
@@ -204,7 +212,7 @@ func main() {
 		total += e.weight
 	}
 	pick := func() endpoint {
-		n := rand.IntN(total)
+		n := mrand.IntN(total)
 		for _, e := range endpoints {
 			if n < e.weight {
 				return e
@@ -222,7 +230,11 @@ func main() {
 		go func() {
 			defer wg.Done()
 			for e := range jobs {
-				if err := e.run(ctx, db); err != nil && ctx.Err() == nil {
+				reqCtx := ctx
+				if *trace {
+					reqCtx = withRequest(ctx, e.name)
+				}
+				if err := e.run(reqCtx, db); err != nil && ctx.Err() == nil {
 					failed.Add(1)
 					log.Printf("%s: %v", e.name, err)
 				}
@@ -255,7 +267,7 @@ loop:
 
 func prepare(ctx context.Context, db *pgxpool.Pool, reset bool) error {
 	if reset {
-		if _, err := db.Exec(ctx, `DROP TABLE IF EXISTS shop_customers, shop_products, shop_orders, shop_reviews`); err != nil {
+		if _, err := db.Exec(ctx, tag(ctx, `DROP TABLE IF EXISTS shop_customers, shop_products, shop_orders, shop_reviews`)); err != nil {
 			return err
 		}
 	}
@@ -263,7 +275,7 @@ func prepare(ctx context.Context, db *pgxpool.Pool, reset bool) error {
 		return fmt.Errorf("create tables: %w", err)
 	}
 	var n int
-	if err := db.QueryRow(ctx, `SELECT count(*) FROM shop_customers`).Scan(&n); err != nil {
+	if err := db.QueryRow(ctx, tag(ctx, `SELECT count(*) FROM shop_customers`)).Scan(&n); err != nil {
 		return err
 	}
 	if n > 0 {
@@ -274,4 +286,24 @@ func prepare(ctx context.Context, db *pgxpool.Pool, reset bool) error {
 		return fmt.Errorf("seed: %w", err)
 	}
 	return nil
+}
+
+// Request context, tagged onto queries the way the Tracelet SDKs do it:
+// a sqlcommenter comment with the route and a W3C traceparent.
+
+type requestKey struct{}
+
+func withRequest(ctx context.Context, route string) context.Context {
+	trace, span := make([]byte, 16), make([]byte, 8)
+	rand.Read(trace)
+	rand.Read(span)
+	tp := "00-" + hex.EncodeToString(trace) + "-" + hex.EncodeToString(span) + "-01"
+	return context.WithValue(ctx, requestKey{}, fmt.Sprintf("/*route='%s',traceparent='%s'*/", url.PathEscape(route), tp))
+}
+
+func tag(ctx context.Context, sql string) string {
+	if c, ok := ctx.Value(requestKey{}).(string); ok {
+		return sql + " " + c
+	}
+	return sql
 }

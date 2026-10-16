@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './api'
-import type { Finding, Info, LiveBatch, LiveEvent, Stats, TableStats, WindowId } from './api'
+import type { Finding, Info, LiveBatch, LiveEvent, RouteStats, Stats, TableStats, WindowId } from './api'
 
 /** Polls a fetcher every `ms` while mounted, keeping the last good value. */
 export function usePoll<T>(fetcher: () => Promise<T>, deps: unknown[], ms = 2000) {
@@ -41,6 +41,10 @@ export function useStats(win: WindowId) {
   const top = usePoll<Stats[]>(() => api.top(win), [win])
   const tables = usePoll<TableStats[]>(() => api.tables(win), [win])
   return { top: top.data, tables: tables.data, error: top.error ?? tables.error }
+}
+
+export function useRoutes(win: WindowId) {
+  return usePoll<RouteStats[]>(() => api.routes(win), [win], 3000)
 }
 
 export function useFindings(win: WindowId) {

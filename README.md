@@ -40,6 +40,7 @@ Change your app's database port from `5432` to `6433` and use your app as usual.
 
 - **Live topology:** every query flows from your app to the tables it touches, as a dot colored by its latency. Query nodes glow with traffic and are ranked by total time.
 - **Queries:** every query shape ranked by total time (calls × latency), with its share of all database time, p95, max, rows and errors.
+- **Requests:** with the [SDK](sdks) (Node or Python, one line of setup), queries are grouped by request. You see routes ranked by database time, and a waterfall of every query a request ran, where N+1 loops show up as a staircase.
 - **Insights:** suggestions ranked by how much time they would save, each with a plain explanation and the exact fix: a missing index, a full table scan, an N+1 loop.
 - **Query detail:** p50/p95 latency over time, calls over time, the query plan, and the last error.
 
@@ -96,7 +97,7 @@ go run ./examples/shop --db postgres://localhost:6433/postgres
 | `core/`       | Shared types, fingerprinting, aggregation, SQLite storage |
 | `detectors/`  | Recommendation rules, one file per detector              |
 | `studio/`     | Tracelet Studio (React + Vite)                            |
-| `sdks/`       | Optional helpers that tag queries with route and trace   |
+| `sdks/`       | Node and Python SDKs that tag queries with route and trace |
 | `examples/`   | Demo apps with deliberately slow queries                 |
 | `docs/`       | Roadmap and design docs                                  |
 
