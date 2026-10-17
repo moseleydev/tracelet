@@ -10,10 +10,12 @@ import (
 	"io/fs"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/moseleydev/tracelet/analyzer"
 	"github.com/moseleydev/tracelet/core"
+	"github.com/moseleydev/tracelet/core/session"
 	"github.com/moseleydev/tracelet/core/store"
 )
 
@@ -22,26 +24,42 @@ var distFS embed.FS
 
 // Info describes the running Tracelet instance to the UI.
 type Info struct {
-	Version       string    `json:"version"`
-	Upstream      string    `json:"upstream,omitempty"` // empty when only viewing saved data
-	Proxy         string    `json:"proxy,omitempty"`
-	Data          string    `json:"data"`
-	CaptureParams bool      `json:"capture_params"`
-	Analyze       bool      `json:"analyze"`
-	StartedAt     time.Time `json:"started_at"`
+	Version       string `json:"version"`
+	Upstream      string `json:"upstream,omitempty"` // empty when only viewing saved data
+	Proxy         string `json:"proxy,omitempty"`
+	Data          string `json:"data"`
+	CaptureParams bool   `json:"capture_params"`
+	// Public is set when Studio was deliberately served on a network
+	// address (--studio-public). It then accepts any Host header.
+	Public    bool      `json:"public"`
+	Analyze   bool      `json:"analyze"`
+	StartedAt time.Time `json:"started_at"`
+}
+
+// Recorder starts and stops traffic recording. *session.Recorder
+// implements it.
+type Recorder interface {
+	Start(path string) (session.Stats, error)
+	Stop() (session.Stats, error)
+	Status() session.Status
+	List() ([]session.Info, error)
 }
 
 // Server is the studio HTTP handler.
 type Server struct {
-	store *store.Store
-	hub   *Hub // nil when there is no live proxy
-	info  Info
-	mux   *http.ServeMux
+	store    *store.Store
+	hub      *Hub     // nil when there is no live proxy
+	recorder Recorder // nil when there is no live proxy
+	info     Info
+	mux      *http.ServeMux
 }
 
-// New returns a studio Server. hub may be nil for read-only viewing.
-func New(st *store.Store, hub *Hub, info Info) *Server {
+// New returns a studio Server. hub and rec may be nil for read-only viewing.
+func New(st *store.Store, hub *Hub, rec Recorder, info Info) *Server {
 	s := &Server{store: st, hub: hub, info: info, mux: http.NewServeMux()}
+	if rec != nil {
+		s.recorder = rec
+	}
 	s.mux.HandleFunc("GET /api/info", s.handleInfo)
 	s.mux.HandleFunc("GET /api/top", s.handleTop)
 	s.mux.HandleFunc("GET /api/tables", s.handleTables)
@@ -52,11 +70,15 @@ func New(st *store.Store, hub *Hub, info Info) *Server {
 	s.mux.HandleFunc("GET /api/routes", s.handleRoutes)
 	s.mux.HandleFunc("GET /api/traces", s.handleTraces)
 	s.mux.HandleFunc("GET /api/trace", s.handleTrace)
+	s.mux.HandleFunc("GET /api/record", s.handleRecordStatus)
+	s.mux.HandleFunc("POST /api/record", s.handleRecord)
 	s.mux.Handle("/", uiHandler())
 	return s
 }
 
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.ServeHTTP(w, r) }
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	guard(s.mux, s.info.Public).ServeHTTP(w, r)
+}
 
 func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 	info := s.info
@@ -267,6 +289,66 @@ func (s *Server) handleTrace(w http.ResponseWriter, r *http.Request) {
 		detail.Queries[sp.Hash] = fps[sp.Hash]
 	}
 	writeJSON(w, detail)
+}
+
+// RecordState is what the record endpoints return.
+type RecordState struct {
+	Available bool           `json:"available"` // false when viewing saved data
+	Status    session.Status `json:"status"`
+	Sessions  []session.Info `json:"sessions"`
+}
+
+func (s *Server) recordState() (RecordState, error) {
+	if s.recorder == nil {
+		return RecordState{Sessions: []session.Info{}}, nil
+	}
+	list, err := s.recorder.List()
+	return RecordState{Available: true, Status: s.recorder.Status(), Sessions: nonNil(list)}, err
+}
+
+func (s *Server) handleRecordStatus(w http.ResponseWriter, r *http.Request) {
+	st, err := s.recordState()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, st)
+}
+
+// handleRecord starts or stops recording: POST {"action": "start" | "stop"}.
+// It requires a JSON body, so browsers won't send it cross-site without a
+// CORS preflight (which Studio never answers), on top of the Origin check.
+func (s *Server) handleRecord(w http.ResponseWriter, r *http.Request) {
+	if s.recorder == nil {
+		http.Error(w, "recording needs a running proxy (tracelet up)", http.StatusConflict)
+		return
+	}
+	if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		http.Error(w, "send JSON", http.StatusUnsupportedMediaType)
+		return
+	}
+	var req struct {
+		Action string `json:"action"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	var err error
+	switch req.Action {
+	case "start":
+		_, err = s.recorder.Start("")
+	case "stop":
+		_, err = s.recorder.Stop()
+	default:
+		http.Error(w, `action must be "start" or "stop"`, http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	s.handleRecordStatus(w, r)
 }
 
 // parseSince reads ?since=15m (a duration back from now) or ?since=0 for

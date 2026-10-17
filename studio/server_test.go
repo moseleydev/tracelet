@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/moseleydev/tracelet/core"
+	"github.com/moseleydev/tracelet/core/session"
 	"github.com/moseleydev/tracelet/core/store"
 	"github.com/moseleydev/tracelet/detectors"
 )
@@ -56,7 +57,7 @@ func getJSON(t *testing.T, srv *httptest.Server, path string, v any) {
 }
 
 func TestAPI(t *testing.T) {
-	srv := httptest.NewServer(New(testStore(t), nil, Info{Version: "test", Data: "t.db"}))
+	srv := httptest.NewServer(New(testStore(t), nil, nil, Info{Version: "test", Data: "t.db"}))
 	defer srv.Close()
 
 	var top []core.Stats
@@ -104,7 +105,7 @@ func TestEmptyListsAreArrays(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	srv := httptest.NewServer(New(st, nil, Info{}))
+	srv := httptest.NewServer(New(st, nil, nil, Info{}))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/top")
@@ -124,7 +125,7 @@ func TestLiveStream(t *testing.T) {
 	defer close(stop)
 	go hub.Run(stop)
 
-	srv := httptest.NewServer(New(testStore(t), hub, Info{}))
+	srv := httptest.NewServer(New(testStore(t), hub, nil, Info{}))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/live")
@@ -184,7 +185,7 @@ func TestLiveStream(t *testing.T) {
 }
 
 func TestLiveOfflineWithoutHub(t *testing.T) {
-	srv := httptest.NewServer(New(testStore(t), nil, Info{}))
+	srv := httptest.NewServer(New(testStore(t), nil, nil, Info{}))
 	defer srv.Close()
 	resp, err := http.Get(srv.URL + "/api/live")
 	if err != nil {
@@ -215,7 +216,7 @@ func TestFindingsAndPlanAPI(t *testing.T) {
 	st := testStore(t)
 	st.SavePlan(store.PlanRecord{Hash: "abc", ExplainedAt: time.Now(), Plan: &detectors.Plan{Node: "Seq Scan", Relation: "users"}})
 	st.ReplaceFindings("abc", []detectors.Finding{{Detector: "missing-index", Severity: detectors.Critical, Title: "Missing index on users (email)", Fix: "CREATE INDEX ..."}})
-	srv := httptest.NewServer(New(st, nil, Info{}))
+	srv := httptest.NewServer(New(st, nil, nil, Info{}))
 	defer srv.Close()
 
 	var findings []struct {
@@ -256,7 +257,7 @@ func TestRoutesAndTracesAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(New(st, nil, Info{}))
+	srv := httptest.NewServer(New(st, nil, nil, Info{}))
 	defer srv.Close()
 
 	var routes []store.RouteStats
@@ -285,5 +286,59 @@ func TestRoutesAndTracesAPI(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("unknown trace: %s", resp.Status)
+	}
+}
+
+func TestRecordAPI(t *testing.T) {
+	rec := &session.Recorder{Dir: filepath.Join(t.TempDir(), "sessions")}
+	srv := httptest.NewServer(New(testStore(t), nil, rec, Info{}))
+	defer srv.Close()
+
+	post := func(body, contentType, origin string) int {
+		req, _ := http.NewRequest("POST", srv.URL+"/api/record", strings.NewReader(body))
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if code := post(`{"action":"start"}`, "text/plain", ""); code != http.StatusUnsupportedMediaType {
+		t.Fatalf("form-style post: %d", code)
+	}
+	if code := post(`{"action":"start"}`, "application/json", "https://evil.example"); code != http.StatusForbidden {
+		t.Fatalf("cross-site post: %d", code)
+	}
+	if rec.Flag.Load() {
+		t.Fatal("refused requests must not start recording")
+	}
+	if code := post(`{"action":"start"}`, "application/json", srv.URL); code != 200 || !rec.Flag.Load() {
+		t.Fatalf("start: %d, flag %v", code, rec.Flag.Load())
+	}
+	if code := post(`{"action":"start"}`, "application/json", ""); code != http.StatusConflict {
+		t.Fatalf("double start: %d", code)
+	}
+	if code := post(`{"action":"stop"}`, "application/json", ""); code != 200 || rec.Flag.Load() {
+		t.Fatalf("stop: %d", code)
+	}
+	var state RecordState
+	getJSON(t, srv, "/api/record", &state)
+	if !state.Available || state.Status.Recording || len(state.Sessions) != 1 {
+		t.Fatalf("state = %+v", state)
+	}
+
+	// Viewing saved data: no recorder.
+	ro := httptest.NewServer(New(testStore(t), nil, nil, Info{}))
+	defer ro.Close()
+	getJSON(t, ro, "/api/record", &state)
+	if state.Available {
+		t.Fatal("recording should be unavailable without a proxy")
 	}
 }

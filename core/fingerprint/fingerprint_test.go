@@ -115,6 +115,24 @@ func TestTemplate(t *testing.T) {
 	}
 }
 
+func TestMultiStatement(t *testing.T) {
+	for q, want := range map[string]bool{
+		"SELECT 1":                      false,
+		"SELECT 1;":                     false,
+		"SELECT 1; SELECT 2":            true,
+		"UPDATE t SET a = 1; COMMIT;":   true,
+		"SELECT ';' FROM t":             false,
+		`SELECT 1 AS ";"`:               false,
+		"SELECT 1 -- ; not a statement": false,
+		"SELECT $$ a; b $$":             false,
+		"-- ping":                       false,
+	} {
+		if got := MultiStatement(q); got != want {
+			t.Errorf("MultiStatement(%q) = %v, want %v", q, got, want)
+		}
+	}
+}
+
 func BenchmarkFingerprint(b *testing.B) {
 	q := "SELECT u.id, u.name, o.total FROM users u JOIN orders o ON o.user_id = u.id WHERE u.email = 'a@b.com' AND o.status IN ('paid', 'shipped') ORDER BY o.created_at DESC LIMIT 20"
 	for i := 0; i < b.N; i++ {

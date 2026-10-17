@@ -64,20 +64,23 @@ func (missingIndex) Detect(in Input) []Finding {
 	// Equality columns first, then at most one range column. With no range
 	// column, the ORDER BY columns can follow so the index also returns rows
 	// in order and the Sort disappears.
-	cols := append([]string(nil), eq...)
+	var cols []string
+	for _, c := range eq {
+		cols = append(cols, quoteIdent(c))
+	}
 	sorted := false
 	if len(rng) > 0 {
-		cols = append(cols, rng[0])
+		cols = append(cols, quoteIdent(rng[0]))
 	} else if keys := sortColumns(sortAbove(best, parents)); len(keys) > 0 {
 		for _, k := range keys {
-			if !seen[strings.TrimSuffix(k, " DESC")] {
+			if !seen[unquoteIdent(strings.TrimSuffix(k, " DESC"))] {
 				cols = append(cols, k)
 				sorted = true
 			}
 		}
 	}
 
-	table := best.Table()
+	table := qualifiedName(best)
 	filterCols := append(eq, rng...)
 	explanation := fmt.Sprintf(
 		"Each call reads all %s rows of %s to find the few that match %s. "+

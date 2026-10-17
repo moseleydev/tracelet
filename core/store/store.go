@@ -111,10 +111,17 @@ type Store struct {
 
 // Open opens or creates the data file at path.
 func Open(path string) (*Store, error) {
+	// The data file holds query shapes, plans and error messages, so only
+	// its owner may read it. SQLite gives its -wal and -shm files the same
+	// mode as the database file.
 	if dir := filepath.Dir(path); dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, err
 		}
+	}
+	if f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600); err == nil {
+		f.Close()
+		os.Chmod(path, 0o600) // tighten files created by older versions
 	}
 	dsn := "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)"
 	db, err := sql.Open("sqlite", dsn)

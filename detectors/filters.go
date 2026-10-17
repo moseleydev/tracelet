@@ -17,7 +17,8 @@ type cond struct {
 	fn     string // function wrapping the column, e.g. "lower", if any
 }
 
-const ident = `"?[A-Za-z_][A-Za-z0-9_$]*"?`
+// ident matches a plain or "quoted" identifier as EXPLAIN prints it.
+const ident = `(?:"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_$]*)`
 
 var (
 	// [qualifier.]column op  — the column is on the left of the operator.
@@ -77,24 +78,18 @@ func isPlanKeyword(s string) bool {
 	return false
 }
 
-// sortColumns turns VERBOSE sort keys such as "orders.created_at DESC" into
-// index column definitions ("created_at DESC"). It gives up on expressions.
+// sortColumns turns VERBOSE sort keys such as `orders.created_at DESC` or
+// `o."Created At"` into index column definitions ("created_at DESC",
+// "\"Created At\""). It gives up (returns nil) on expressions.
 func sortColumns(keys []string) []string {
 	var out []string
 	for _, k := range keys {
-		parts := strings.Fields(k)
-		if len(parts) == 0 {
+		m := reSortKey.FindStringSubmatch(strings.TrimSpace(k))
+		if m == nil {
 			return nil
 		}
-		col := parts[0]
-		if i := strings.LastIndexByte(col, '.'); i >= 0 {
-			col = col[i+1:]
-		}
-		if strings.ContainsAny(col, "()") {
-			return nil
-		}
-		def := unquoteIdent(col)
-		if len(parts) > 1 && strings.EqualFold(parts[1], "DESC") {
+		def := quoteIdent(unquoteIdent(m[1]))
+		if strings.EqualFold(m[2], "DESC") {
 			def += " DESC"
 		}
 		out = append(out, def)
@@ -102,11 +97,47 @@ func sortColumns(keys []string) []string {
 	return out
 }
 
+var reSortKey = regexp.MustCompile(`^(?:` + ident + `\.)?(` + ident + `)(?:\s+(ASC|DESC))?(?:\s+NULLS\s+(?:FIRST|LAST))?$`)
+
 func unquoteIdent(s string) string {
 	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
-		return s[1 : len(s)-1]
+		return strings.ReplaceAll(s[1:len(s)-1], `""`, `"`)
 	}
 	return s
+}
+
+var plainIdent = regexp.MustCompile(`^[a-z_][a-z0-9_$]*$`)
+
+// quoteIdent makes a name safe to put in generated SQL, quoting it when it
+// has capitals, spaces or other special characters, or is a reserved word.
+func quoteIdent(name string) string {
+	if plainIdent.MatchString(name) && !reserved[strings.ToUpper(name)] {
+		return name
+	}
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
+// qualifiedName is a scan node's table, quoted for SQL.
+func qualifiedName(p *Plan) string {
+	if p.Schema != "" {
+		return quoteIdent(p.Schema) + "." + quoteIdent(p.Relation)
+	}
+	return quoteIdent(p.Relation)
+}
+
+// PostgreSQL's reserved key words, which must be quoted as identifiers.
+var reserved = map[string]bool{}
+
+func init() {
+	for _, w := range strings.Fields(`ALL ANALYSE ANALYZE AND ANY ARRAY AS ASC ASYMMETRIC BOTH CASE CAST
+		CHECK COLLATE COLUMN CONSTRAINT CREATE CURRENT_CATALOG CURRENT_DATE CURRENT_ROLE CURRENT_TIME
+		CURRENT_TIMESTAMP CURRENT_USER DEFAULT DEFERRABLE DESC DISTINCT DO ELSE END EXCEPT FALSE FETCH
+		FOR FOREIGN FROM GRANT GROUP HAVING IN INITIALLY INTERSECT INTO LATERAL LEADING LIMIT LOCALTIME
+		LOCALTIMESTAMP NOT NULL OFFSET ON ONLY OR ORDER PLACING PRIMARY REFERENCES RETURNING SELECT
+		SESSION_USER SOME SYMMETRIC TABLE THEN TO TRAILING TRUE UNION UNIQUE USER USING VARIADIC WHEN
+		WHERE WINDOW WITH`) {
+		reserved[w] = true
+	}
 }
 
 // indexName builds a conventional, valid index name: table_col1_col2_idx.
@@ -116,11 +147,23 @@ func indexName(table string, cols []string, suffix string) string {
 	}
 	parts := []string{table}
 	for _, c := range cols {
-		c = strings.TrimSuffix(c, " DESC")
-		c = strings.NewReplacer("(", "_", ")", "", " ", "_").Replace(c)
-		parts = append(parts, c)
+		parts = append(parts, strings.TrimSuffix(c, " DESC"))
 	}
-	name := strings.Join(parts, "_") + "_" + suffix
+	// Lowercase letters, digits and underscores only, so the name never
+	// needs quoting.
+	var b strings.Builder
+	for _, r := range strings.ToLower(strings.Join(parts, "_") + "_" + suffix) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case b.Len() > 0 && !strings.HasSuffix(b.String(), "_"):
+			b.WriteByte('_')
+		}
+	}
+	name := strings.Trim(b.String(), "_")
+	if name == "" || name[0] >= '0' && name[0] <= '9' {
+		name = "idx_" + name
+	}
 	if len(name) > 63 { // PostgreSQL's identifier limit
 		name = name[:63]
 	}

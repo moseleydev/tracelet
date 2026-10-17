@@ -6,6 +6,7 @@ package aggregate
 
 import (
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/moseleydev/tracelet/core"
@@ -41,6 +42,8 @@ type Aggregator struct {
 
 	traces map[string]*openTrace // requests still receiving queries
 	closed []core.Trace          // finished requests waiting to be saved
+
+	panics int // internal errors recovered by safeAdd
 }
 
 // openTrace collects the queries of one request until it goes quiet.
@@ -168,6 +171,9 @@ func (a *Aggregator) add(e *core.Event) core.Fingerprint {
 	if e.Error != "" {
 		r.Errors++
 		r.LastError = e.Error
+		if !a.captureParams {
+			r.LastError = redactValues(e.Error)
+		}
 	}
 	if e.Duration >= r.SlowDuration {
 		r.SlowDuration = e.Duration
@@ -354,23 +360,77 @@ func (a *Aggregator) evict(all bool) {
 
 // Run consumes events until the channel closes, flushing every interval and
 // once more at the end. onEvent, if set, sees each event and its fingerprint.
-func (a *Aggregator) Run(events <-chan core.Event, interval time.Duration, onEvent func(core.Event, core.Fingerprint)) error {
-	tick := time.NewTicker(interval)
-	defer tick.Stop()
+// safeAdd records one event. A bug triggered by an unusual query skips that
+// event instead of crashing Tracelet, which would cut every application
+// connection going through the proxy.
+func (a *Aggregator) safeAdd(e *core.Event, onEvent func(core.Event, core.Fingerprint)) {
+	defer func() {
+		if r := recover(); r != nil {
+			a.panics++
+			if a.panics <= 3 {
+				a.logf("skipped a query after an internal error (traffic is unaffected): %v", r)
+			}
+		}
+	}()
+	fp := a.add(e)
+	if onEvent != nil {
+		onEvent(*e, fp)
+	}
+}
+
+// redactValues removes data values from a PostgreSQL error message, keeping
+// identifiers. Values appear single-quoted, or double-quoted after a colon
+// (`invalid input syntax for type integer: "abc"`); identifiers appear
+// double-quoted after a word (`relation "users" does not exist`).
+func redactValues(msg string) string {
+	var b strings.Builder
+	for i := 0; i < len(msg); i++ {
+		c := msg[i]
+		value := c == '\'' || (c == '"' && i >= 2 && msg[i-2] == ':' && msg[i-1] == ' ')
+		if !value {
+			b.WriteByte(c)
+			continue
+		}
+		end := strings.IndexByte(msg[i+1:], c)
+		if end < 0 {
+			b.WriteString(msg[i:i+1] + "?")
+			break
+		}
+		b.WriteString(msg[i:i+1] + "?" + msg[i:i+1])
+		i += end + 1
+	}
+	return b.String()
+}
+
+// Source supplies events in batches. *proxy.Sink implements it.
+type Source interface {
+	// Batch returns the events emitted since the last call, reusing spare's
+	// storage, waiting briefly when there are none. ok is false once the
+	// source is closed and drained.
+	Batch(spare []core.Event) (batch []core.Event, ok bool)
+}
+
+// Run consumes events until the source is closed, flushing every interval
+// and once more at the end. onEvent, if set, sees each event and its
+// fingerprint.
+func (a *Aggregator) Run(src Source, interval time.Duration, onEvent func(core.Event, core.Fingerprint)) error {
+	next := time.Now().Add(interval)
+	var spare []core.Event
 	for {
-		select {
-		case e, ok := <-events:
-			if !ok {
-				return a.Flush(true)
-			}
-			fp := a.add(&e)
-			if onEvent != nil {
-				onEvent(e, fp)
-			}
-		case <-tick.C:
+		batch, ok := src.Batch(spare)
+		for i := range batch {
+			a.safeAdd(&batch[i], onEvent)
+		}
+		clear(batch) // drop references to query strings before reuse
+		spare = batch
+		if !ok {
+			return a.Flush(true)
+		}
+		if now := time.Now(); !now.Before(next) {
 			if err := a.Flush(false); err != nil {
 				a.logf("saving stats: %v", err)
 			}
+			next = now.Add(interval)
 		}
 	}
 }

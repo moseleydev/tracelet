@@ -1,0 +1,60 @@
+# Release builds: `git tag v0.1.0 && git push --tags` runs this in CI
+# (.github/workflows/release.yml). Try it locally without publishing:
+#   goreleaser release --snapshot --clean
+version: 2
+project_name: tracelet
+
+before:
+  hooks:
+    - make studio-build   # embeds Tracelet Studio in the binary
+
+builds:
+  - main: ./cmd/tracelet
+    binary: tracelet
+    env:
+      - CGO_ENABLED=0     # pure Go: one static binary, no runtime dependencies
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files: [LICENSE, README.md, SECURITY.md]
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude: ["^Merge "]
+
+homebrew_casks:
+  # Publishes to github.com/moseleydev/homebrew-tap once that repository and
+  # a HOMEBREW_TAP_GITHUB_TOKEN secret exist; skipped until then.
+  - name: tracelet
+    repository:
+      owner: moseleydev
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    skip_upload: '{{ if index .Env "HOMEBREW_TAP_GITHUB_TOKEN" }}false{{ else }}true{{ end }}'
+    homepage: https://github.com/moseleydev/tracelet
+    description: See every query your app sends to its database, how long it took, and how to make it faster.
+    license: Apache-2.0
+    hooks:
+      post:
+        # The binary isn't notarized by Apple; clear the quarantine flag so
+        # macOS lets it run.
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/tracelet"]
+          end
+
+release:
+  draft: true   # review the notes, then publish

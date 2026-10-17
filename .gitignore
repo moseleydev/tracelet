@@ -22,3 +22,6 @@ studio/dist/*
 # Python
 __pycache__/
 *.egg-info/
+
+# Releases
+/dist/

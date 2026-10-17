@@ -45,9 +45,13 @@ The UI is embedded in the Go binary and has no chart or animation dependencies: 
 
 ### Before going public
 
+- [x] Load test and cut the proxy's overhead; fuzz the parsers; isolate internal errors from app traffic
+- [x] Security review: Studio host/Origin guard, private data files, no stored values in errors, quoted SQL in fixes
+- [x] Release binaries for macOS, Linux and Windows (GoReleaser), install script, Homebrew cask, SDK publish workflows
+- [x] Demo GIF and screenshots; starter issues drafted (`docs/launch/good-first-issues.md`); launch posts drafted
 - [ ] Add a contact address to CODE_OF_CONDUCT.md
-- [ ] Release binaries for macOS, Linux and Windows
-- [ ] Label 10–15 `good first issue`s (new detectors are ideal)
+- [ ] Accounts and secrets for npm, PyPI and Homebrew (see RELEASING.md)
+- [ ] File the starter issues, make the repository public, tag v0.1.0
 
 ## Phase 4: Analyzer and recommendations (in progress)
 
@@ -72,12 +76,16 @@ The UI is embedded in the Go binary and has no chart or animation dependencies: 
 - [ ] Publish the SDKs to npm and PyPI
 - [ ] More integrations (Prisma, Knex, psycopg without an ORM, Rails via existing sqlcommenter gems)
 
-## Phase 6: Record, replay, simulate
+## Phase 6: Record, replay, simulate ✅
 
-- [ ] `tracelet record` writes a `.session` file
-- [ ] Session player with a scrubbable timeline
-- [ ] `tracelet replay` against staging only: writes rolled back, production hosts refused
-- [ ] Load simulation (×10, ×100) with before/after comparison
+- [x] Record from Studio or `tracelet up --record`: wire-exact sessions (`.trc.gz`), zero cost when not recording, size-capped, owner-only files
+- [x] `tracelet replay`:
+  - read mode on read-only connections;
+  - rollback mode where every write is rolled back;
+  - refuses to write to the recorded database
+- [x] Load simulation (`--scale`, `--speed`) with per-query comparison against the recording
+- [x] Before/after comparison (`--save`, `--compare`)
+- [ ] Session player with a scrubbable timeline in Studio
 
 ## Phase 7: More databases
 

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -149,5 +150,22 @@ func TestTables(t *testing.T) {
 	want[0], want[1] = want[1], want[0]
 	if !reflect.DeepEqual(tables, want) {
 		t.Fatalf("tables =\n %+v\nwant\n %+v", tables, want)
+	}
+}
+
+func TestDataFileIsPrivate(t *testing.T) {
+	_, path := open(t)
+	for _, p := range []string{path, filepath.Dir(path)} {
+		info, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := os.FileMode(0o600)
+		if info.IsDir() {
+			want = 0o700
+		}
+		if info.Mode().Perm() != want {
+			t.Errorf("%s has mode %v, want %v", p, info.Mode().Perm(), want)
+		}
 	}
 }

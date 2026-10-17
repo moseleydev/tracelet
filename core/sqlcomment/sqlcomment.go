@@ -52,7 +52,7 @@ func Parse(query string) (string, Fields) {
 		return query, nil
 	}
 	start := strings.LastIndex(s, "/*")
-	if start < 0 {
+	if start < 0 || start+2 > len(s)-2 { // "/*/" opens and closes on the same '*'
 		return query, nil
 	}
 	fields := parsePairs(s[start+2 : len(s)-2])

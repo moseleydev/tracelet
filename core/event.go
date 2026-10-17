@@ -24,6 +24,23 @@ type Event struct {
 	// app has no Tracelet SDK.
 	TraceID string `json:"trace_id,omitempty"`
 	Route   string `json:"route,omitempty"`
+
+	// Replay holds what is needed to send this query again exactly. It is
+	// only filled while a session is being recorded.
+	Replay *Replay `json:"-"`
+}
+
+// Replay is the wire-level detail of one query, for recording sessions.
+// For the extended protocol it mirrors the Parse and Bind messages, so a
+// replay sends exactly what the application sent, binary parameters
+// included, whatever its language or driver.
+type Replay struct {
+	Simple        bool     `json:"s,omitempty"` // simple-protocol query (may hold several statements)
+	Query         string   `json:"q"`
+	ParamOIDs     []uint32 `json:"o,omitempty"`  // parameter types from Parse; 0 = let the server infer
+	ParamFormats  []int16  `json:"pf,omitempty"` // 0 text, 1 binary
+	Params        [][]byte `json:"p,omitempty"`  // nil element = NULL
+	ResultFormats []int16  `json:"rf,omitempty"`
 }
 
 // Engine identifies the database protocol an event came from.

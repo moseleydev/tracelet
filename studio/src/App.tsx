@@ -4,6 +4,7 @@ import { fmtCount, fmtMs, nsToMs, windows } from './api'
 import type { Finding, WindowId } from './api'
 import { useFindings, useInfo, useLive, useRoutes, useStats } from './hooks'
 import { Requests } from './Requests'
+import { Recording } from './Recording'
 import { Insights } from './Insights'
 import { QueryDetail } from './QueryDetail'
 import { QueryTable, SpeedChip } from './QueryTable'
@@ -98,6 +99,7 @@ export default function App() {
           </span>
         </div>
         <span className="spacer" />
+        {isLive && <Recording />}
         <label className="dim window-label" htmlFor="window" style={{ fontSize: 12 }}>
           Window
         </label>

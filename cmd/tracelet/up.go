@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/moseleydev/tracelet/analyzer"
 	"github.com/moseleydev/tracelet/core"
 	"github.com/moseleydev/tracelet/core/aggregate"
+	"github.com/moseleydev/tracelet/core/session"
 	"github.com/moseleydev/tracelet/core/store"
 	"github.com/moseleydev/tracelet/proxy"
 	"github.com/moseleydev/tracelet/proxy/postgres"
@@ -24,18 +26,32 @@ import (
 
 func runUp(args []string) error {
 	fs := flag.NewFlagSet("up", flag.ExitOnError)
-	db := fs.String("db", "", "upstream database URL, e.g. postgres://user:pass@localhost:5432/app")
+	db := fs.String("db", "", "upstream database URL, e.g. postgres://user:pass@localhost:5432/app (or set TRACELET_DB_URL to keep the password out of the process list)")
 	listen := fs.String("listen", "127.0.0.1:6433", "address the proxy listens on; point your app here")
 	captureParams := fs.Bool("capture-params", false, "record bound parameter values (may contain personal data)")
 	quiet := fs.Bool("quiet", false, "do not print each query")
 	dataPath := fs.String("data", store.DefaultPath, "file where query stats are saved")
 	studioAddr := fs.String("studio", "127.0.0.1:4000", "address Tracelet Studio is served on; empty to disable")
+	studioPublic := fs.Bool("studio-public", false, "allow serving Studio on a non-local address (it has no login: anyone who can reach it sees your query data)")
 	openBrowser := fs.Bool("open", true, "open Tracelet Studio in your browser")
 	analyze := fs.Bool("analyze", true, "EXPLAIN the costliest queries (read-only, never executed) to find missing indexes and other problems")
+	record := fs.Bool("record", false, "record traffic for replay from the start (also available from Studio). Session files contain query values")
+	recordDir := fs.String("record-dir", "", "where recorded sessions are saved (default: a sessions folder next to --data)")
+	recordLimit := fs.Int64("record-limit", 1024, "stop recording a session after this many MB (uncompressed)")
 	fs.Parse(args)
 
 	if *db == "" {
-		return fmt.Errorf("up: --db is required")
+		*db = os.Getenv("TRACELET_DB_URL")
+	}
+	if *db == "" {
+		return fmt.Errorf("up: --db (or TRACELET_DB_URL) is required")
+	}
+	if err := checkStudioAddr(*studioAddr, *studioPublic); err != nil {
+		return fmt.Errorf("up: %w", err)
+	}
+	if !studio.IsLoopback(*listen) {
+		fmt.Fprintf(os.Stderr, "tracelet: warning: the proxy listens on %s, beyond this machine. "+
+			"Traffic between your app and Tracelet is not encrypted; keep it on a trusted network.\n", *listen)
 	}
 	u, err := url.Parse(*db)
 	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") {
@@ -56,6 +72,16 @@ func runUp(args []string) error {
 	defer st.Close()
 	logger := log.New(os.Stderr, "tracelet: ", 0)
 
+	if *recordDir == "" {
+		*recordDir = filepath.Join(filepath.Dir(*dataPath), "sessions")
+	}
+	recorder := &session.Recorder{
+		Dir:      *recordDir,
+		Upstream: net.JoinHostPort(host, port) + u.Path,
+		Version:  version,
+		Limit:    *recordLimit << 20,
+	}
+
 	sink := proxy.NewSink(8192)
 	srv, err := postgres.New(postgres.Config{
 		Upstream:      net.JoinHostPort(host, port),
@@ -63,6 +89,7 @@ func runUp(args []string) error {
 		CaptureParams: *captureParams,
 		Sink:          sink,
 		Logf:          logger.Printf,
+		Recording:     &recorder.Flag,
 	})
 	if err != nil {
 		return err
@@ -79,13 +106,14 @@ func runUp(args []string) error {
 	var ui *studioServer
 	if *studioAddr != "" {
 		hub = studio.NewHub()
-		ui, err = startStudio(*studioAddr, studio.New(st, hub, studio.Info{
+		ui, err = startStudio(*studioAddr, studio.New(st, hub, recorder, studio.Info{
 			Version:       version,
 			Upstream:      net.JoinHostPort(host, port),
 			Proxy:         ln.Addr().String(),
 			Data:          *dataPath,
 			CaptureParams: *captureParams,
 			Analyze:       *analyze,
+			Public:        *studioPublic,
 			StartedAt:     time.Now(),
 		}), hub)
 		if err != nil {
@@ -128,16 +156,35 @@ func runUp(args []string) error {
 	color := isTerminal(os.Stdout)
 	started := time.Now()
 	var count int64
+	if *record {
+		st, err := recorder.Start("")
+		if err != nil {
+			return fmt.Errorf("up: start recording: %w", err)
+		}
+		fmt.Printf("recording to       %s  (contains query values: treat it like a database dump)\n\n", st.Path)
+	}
+
 	agg := aggregate.New(st, *captureParams, logger.Printf)
-	aggErr := agg.Run(sink.Events(), time.Second, func(e core.Event, fp core.Fingerprint) {
+	aggErr := agg.Run(sink, time.Second, func(e core.Event, fp core.Fingerprint) {
 		count++
 		if hub != nil {
 			hub.Publish(e, fp)
+		}
+		if e.Replay != nil || recorder.Flag.Load() {
+			recorder.Record(e, fp.Hash)
 		}
 		if !*quiet {
 			printEvent(e, color)
 		}
 	})
+
+	if recorder.Status().Recording {
+		if st, err := recorder.Stop(); err != nil {
+			logger.Printf("finishing recording: %v", err)
+		} else {
+			printRecorded(st)
+		}
+	}
 
 	fmt.Printf("\n%d queries captured", count)
 	if d := sink.Dropped(); d > 0 {
@@ -213,4 +260,16 @@ func oneLine(q string, max int) string {
 func isTerminal(f *os.File) bool {
 	fi, err := f.Stat()
 	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
+func printRecorded(st session.Stats) {
+	fmt.Printf("\nRecorded %d queries to %s", st.Entries, st.Path)
+	if st.Dropped > 0 {
+		fmt.Printf(" (%d not recorded", st.Dropped)
+		if st.Full {
+			fmt.Print(": the session reached --record-limit")
+		}
+		fmt.Print(")")
+	}
+	fmt.Printf("\nReplay it against a staging copy with:\n  tracelet replay %s --target postgres://…/staging\n", st.Path)
 }
