@@ -6,6 +6,6 @@ In short: be respectful, assume good intent, welcome newcomers, and keep discuss
 
 ## Reporting
 
-If you experience or witness unacceptable behavior, report it privately to the maintainers at **TODO: add a contact address**. All reports will be reviewed promptly and kept confidential.
+If you experience or witness unacceptable behavior, report it privately to the maintainers at [meetakachi@gmail.com](mailto:meetakachi@gmail.com). All reports will be reviewed promptly and kept confidential.
 
 Maintainers may remove comments, commits, issues and other contributions that violate this code, and may temporarily or permanently ban contributors for behavior they deem harmful.
