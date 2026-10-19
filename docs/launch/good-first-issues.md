@@ -1,6 +1,6 @@
 # Starter issues
 
-Ready to file on GitHub before launch. Each one is self-contained and links to the code a contributor needs. Labels are in brackets.
+Filed on GitHub as issues #5 to #18 at launch. Each one is self-contained and links to the code a contributor needs. Labels are in brackets.
 
 ---
 

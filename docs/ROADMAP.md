@@ -41,17 +41,17 @@ Everything is pure Go, with no cgo, so Tracelet ships as a single binary for eve
 
 The UI is embedded in the Go binary and has no chart or animation dependencies: the topology is a 2D canvas, the charts are SVG. Light and dark themes follow the OS, and it works down to phone width.
 
-**Next:** open the repository to contributors (see "Before going public" below), then Phase 4.
+The repository opened to contributors with v0.1.0 (see "Before going public" below).
 
-### Before going public
+### Before going public ✅
 
 - [x] Load test and cut the proxy's overhead; fuzz the parsers; isolate internal errors from app traffic
 - [x] Security review: Studio host/Origin guard, private data files, no stored values in errors, quoted SQL in fixes
 - [x] Release binaries for macOS, Linux and Windows (GoReleaser), install script, Homebrew cask, SDK publish workflows
 - [x] Demo GIF and screenshots; starter issues drafted (`docs/launch/good-first-issues.md`); launch posts drafted
 - [x] Add a contact address to CODE_OF_CONDUCT.md
-- [ ] Accounts and secrets for npm, PyPI and Homebrew (see RELEASING.md)
-- [ ] File the starter issues, make the repository public, tag v0.1.0
+- [x] Accounts and trusted publishing for npm, PyPI and Homebrew (see RELEASING.md)
+- [x] File the starter issues, make the repository public, tag v0.1.0
 
 ## Phase 4: Analyzer and recommendations (in progress)
 
@@ -61,7 +61,7 @@ The UI is embedded in the Go binary and has no chart or animation dependencies: 
 - [x] Detectors: missing index (with ORDER BY columns), full scan (leading-wildcard `LIKE`, functions on columns, unfiltered reads), N+1 (back-to-back repeats per connection)
 - [x] Insights tab, issue badges in the topology and query list, suggestions in `tracelet top`
 - [x] Findings clear themselves once fixed (plans refresh every 2 minutes)
-- [ ] More detectors (good first issues): unbounded query, `SELECT *`, duplicate reads, `OFFSET` pagination, unused indexes
+- [ ] More detectors ([good first issues](https://github.com/moseleydev/tracelet/issues?q=is%3Aissue+is%3Aopen+label%3Adetector)): unbounded query, `SELECT *`, duplicate reads, `OFFSET` pagination, unused indexes
 - [x] What-if index simulation with HypoPG: estimated reduction in work, and whether the planner would use the index, before creating it (btree, hash and brin; GIN/GiST can't be simulated)
 
 ## Phase 5: Request context ✅
@@ -73,7 +73,7 @@ The UI is embedded in the Go binary and has no chart or animation dependencies: 
 - [x] Requests tab with per-request waterfalls; routes as sources in the live topology
 - [x] Trace-based N+1 detection, which works even when every query uses a different pooled connection
 - [x] Shared sqlcommenter test cases across Go, Node and Python
-- [ ] Publish the SDKs to npm and PyPI
+- [x] Publish the SDKs to npm and PyPI (`tracelet-sdk`)
 - [ ] More integrations (Prisma, Knex, psycopg without an ORM, Rails via existing sqlcommenter gems)
 
 ## Phase 6: Record, replay, simulate ✅
