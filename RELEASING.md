@@ -5,7 +5,7 @@
 | For | Do this |
 |---|---|
 | Homebrew | Create the public repository `moseleydev/homebrew-tap`. Add a fine-grained token with *Contents: read and write* on it as the secret `HOMEBREW_TAP_GITHUB_TOKEN` in this repository. Without it, releases skip Homebrew. |
-| npm | Create an npm account, then add an automation token as the secret `NPM_TOKEN`. The package name is `tracelet-sdk`. |
+| npm | npm only accepts a *trusted publisher* for a package that already exists, so publish the first version by hand: `cd sdks/node && npm login && npm publish --access public`. Then, on the package's settings page on npmjs.com, add a trusted publisher for GitHub Actions: owner `moseleydev`, repository `tracelet`, workflow `publish-sdks.yml`. Push the next `sdk-node-v*` tag within 2 days, or npm expires the unused configuration. Once a CI publish has worked, choose *Require two-factor authentication and disallow tokens*. No token is stored. |
 | PyPI | On PyPI, add a *trusted publisher* for project `tracelet-sdk`: owner `moseleydev`, repository `tracelet`, workflow `publish-sdks.yml`, environment `pypi`. Create an environment named `pypi` in this repository's settings. No token is stored. |
 | Vulnerability reports | In the repository settings, turn on *Private vulnerability reporting* (SECURITY.md points people there). |
 
@@ -41,4 +41,4 @@ git tag sdk-node-v0.1.0 && git push origin sdk-node-v0.1.0
 git tag sdk-python-v0.1.0 && git push origin sdk-python-v0.1.0
 ```
 
-The workflow refuses to publish if the tag and the version in the package file disagree.
+The workflow refuses to publish if the tag and the version in the package file disagree. The first Node SDK version is published by hand (see One-time setup), so its first tag is the version after that.
