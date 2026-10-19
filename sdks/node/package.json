@@ -1,6 +1,6 @@
 {
   "name": "tracelet-sdk",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Tag your database queries with the request that ran them, so Tracelet can show per-request waterfalls and catch N+1 loops.",
   "license": "Apache-2.0",
   "main": "index.js",
