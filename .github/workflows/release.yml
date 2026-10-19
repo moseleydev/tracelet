@@ -23,7 +23,7 @@ jobs:
           cache: npm
           cache-dependency-path: studio/package-lock.json
       - name: Check for known vulnerabilities
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
       - uses: goreleaser/goreleaser-action@v6
         with:
           version: "~> v2"
