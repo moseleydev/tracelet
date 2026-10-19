@@ -6,7 +6,7 @@
 
 Tracelet sits between your application and your database as a lightweight proxy. It works with any language or framework, with no code changes. Tracelet Studio then shows your traffic as a live, animated map: slow queries glow red, N+1 loops show up as staircases, and full-table scans come with the exact index that fixes them.
 
-> **Status: early development.** Tracelet is being built in the open. See the [roadmap](docs/ROADMAP.md) for what works today and what is next.
+> **Status: v0.1.0, early but usable.** PostgreSQL is supported today. Tracelet is built in the open: see the [roadmap](docs/ROADMAP.md) for what is next, and the [good first issues](https://github.com/moseleydev/tracelet/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) if you would like to help.
 
 ## Why
 
