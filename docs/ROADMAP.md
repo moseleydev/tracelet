@@ -49,7 +49,7 @@ The UI is embedded in the Go binary and has no chart or animation dependencies: 
 - [x] Security review: Studio host/Origin guard, private data files, no stored values in errors, quoted SQL in fixes
 - [x] Release binaries for macOS, Linux and Windows (GoReleaser), install script, Homebrew cask, SDK publish workflows
 - [x] Demo GIF and screenshots; starter issues drafted (`docs/launch/good-first-issues.md`); launch posts drafted
-- [ ] Add a contact address to CODE_OF_CONDUCT.md
+- [x] Add a contact address to CODE_OF_CONDUCT.md
 - [ ] Accounts and secrets for npm, PyPI and Homebrew (see RELEASING.md)
 - [ ] File the starter issues, make the repository public, tag v0.1.0
 
