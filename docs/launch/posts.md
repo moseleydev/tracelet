@@ -1,6 +1,6 @@
 # Launch posts (drafts)
 
-Fill in the numbers marked **[FILL]** from the Benchmark workflow's job summary on GitHub (a clean Linux runner) before posting. Don't use numbers from a busy laptop.
+Overhead numbers come from the Benchmark workflow on a clean Linux runner (pgbench, PostgreSQL 16, 3 rounds, 2026-10-19), not a laptop. Re-run it after proxy changes and update them.
 
 ---
 
@@ -20,13 +20,15 @@ Tracelet is a small proxy you put between your app and PostgreSQL. It works with
 - **Request waterfalls,** via optional Node and Python SDKs that tag queries with their route (sqlcommenter format).
 - **Record and replay:** capture real traffic, replay it against a staging copy at 10× load, and compare before and after an index. Replay can't write by accident: read mode uses read-only connections, and rollback mode rolls every write back.
 
-The proxy is the part that matters most for not slowing anything down. It forwards bytes unchanged, never blocks on analysis, and drops statistics rather than queries if it falls behind. A bug in its parsing stops tracking for that one connection, not your traffic. On a clean Linux machine it adds **[FILL] ms** per query at moderate load. Fully saturated on the same host it keeps **[FILL]%** of direct throughput, close to a do-nothing TCP relay (**[FILL]%**).
+The proxy is the part that matters most for not slowing anything down. It forwards bytes unchanged, never blocks on analysis, and drops statistics rather than queries if it falls behind. A bug in its parsing stops tracking for that one connection, not your traffic. On a clean Linux CI runner it adds about 0.13 ms per query at a steady 2,000 queries/s. Fully saturated on the same small machine, with pgbench, PostgreSQL and Tracelet competing for the same CPUs, it keeps about 70% of direct throughput (73% with prepared statements). The benchmark runs in CI, so you can check the numbers.
 
 Literal values are never stored: Tracelet keeps query shapes (`WHERE email = ?`), not data. It's a single Go binary with the UI embedded, Apache-2.0.
 
+Install: `curl -fsSL https://raw.githubusercontent.com/moseleydev/tracelet/main/install.sh | sh` or `brew install moseleydev/tap/tracelet`, then `tracelet up --db postgres://...`
+
 Repo: https://github.com/moseleydev/tracelet
 
-I'd love feedback, and contributors: new detectors are one file each, and there are starter issues.
+I'd love feedback, and contributors: new detectors are one file each, and there are starter issues. Questions and ideas are welcome in GitHub Discussions.
 
 ---
 
@@ -52,8 +54,9 @@ I built Tracelet to make that visible. Open source, works with any language. �
 
 37× faster on the slow query, and everything else 2–5× faster because the database stopped saturating.
 
-7/ Built not to get in your app's way: bytes are forwarded unchanged, it never blocks on analysis, and it never stores literal values. Single Go binary, Apache-2.0.
+7/ Built not to get in your app's way: bytes are forwarded unchanged, it never blocks on analysis, and it never stores literal values. About 0.13 ms per query in CI. Single Go binary, Apache-2.0.
 
+brew install moseleydev/tap/tracelet
 github.com/moseleydev/tracelet
 
 ---
